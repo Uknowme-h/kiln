@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kiln — the floor</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header>
+    <div class="logo">KILN<em>.</em></div>
+    <span class="tagline">a multi-agent dev team, at work</span>
+    <span class="spacer"></span>
+    <span id="conn" class="chip">connecting</span>
+    <button id="demo-btn" class="btn" type="button">▶ Run demo</button>
+  </header>
+
+  <main>
+    <section class="panel stage">
+      <canvas id="floor" width="1000" height="560"></canvas>
+    </section>
+
+    <aside class="side">
+      <div class="panel">
+        <h2>Token meter</h2>
+        <div class="meter"><div id="meter-fill"></div></div>
+        <div id="meter-label" class="meter-label">0 / 200,000 tokens</div>
+      </div>
+
+      <div class="panel">
+        <h2>CI</h2>
+        <div id="ci" class="ci ci-idle">waiting</div>
+      </div>
+
+      <div class="panel">
+        <h2>Event log</h2>
+        <ul id="log"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <script src="/static/engine.js"></script>
+  <script src="/static/characters.js"></script>
+  <script src="/static/props.js"></script>
+  <script src="/static/scene.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

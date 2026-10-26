@@ -6,13 +6,15 @@ Oct 26, 2026 · @Nishant Jasiwal
 
 The plan is to build a team of AI agents that turns a typed idea into a tested, running app on Meta's models, and to submit it to the Indie Developer track by Nov 4, 9:00 PM ET (Nov 5, 7:45 AM in Kathmandu).
 
-The pitch: you describe a product, a requirements agent writes the spec, a PM agent plans the work, coding agents build it in parallel, and a test loop decides when it is done. The working name is still open (Foreman and Greenlight were the favourites).
+The pitch: you describe a product, a requirements agent writes the spec, a PM agent plans the work, coding agents build it in parallel, and a test loop decides when it is done. The working name is kiln.
 
 Success by Nov 4 means three things:
 
 1. One prompt produces a small working web app with passing tests, unattended, live on camera.
 2. The repo is public, all new work, with a clear record of what was built during the hackathon.
 3. The 3-minute demo video and a README with an evaluation table are submitted well before the deadline.
+
+
 
 ## Rules and constraints
 
@@ -27,17 +29,21 @@ The rule that shapes the whole plan is "new work only": everything demoed must b
 - **Banned projects:** anything using code, data or assets you lack rights to. The guide's anti-project list (medical advice bots, basic RAG apps, simple chatbots and similar) does not cover this idea.
 - **Credits:** claim your own $150 Meta Model API credits by Nov 4, 9:00 PM ET. A credit card is needed to make API calls.
 
+
+
 ## Scoring strategy
 
 Each judging criterion maps to a build decision made now, so the work earns points instead of being tuned at the end. Stage 2 scores four equally weighted criteria from 0 to 10, and the top 5 per track reach live final judging.
 
-| Criterion | What judges ask | Decision it drives |
-| --- | --- | --- |
-| Stage 1 (pass/fail) | Does it fit a theme and really use Meta models? | Frame it under Push the Frontier (software). Every agent calls Meta models through one gateway. |
-| Impact | Real-world potential, fit with a problem statement | Aim at solo builders and founders who need a first working version. Show three different apps built from three prompts. |
-| Use of Meta AI tooling | Did the team go beyond a basic integration? | Muse Spark for planning, Muse Spark Open for coding workers if it handles tools well (test on day one), Muse Voice Transcribe for spoken ideas. |
-| Technical depth and execution | Sound engineering, real craft | Typed state, sandboxed execution, a test-gated loop, a budget guard, and an evaluation harness. |
-| Demo | Working, impressive, holds up live | One reliable path, a cached fallback run, and a scripted 3-minute video. |
+
+| Criterion                     | What judges ask                                    | Decision it drives                                                                                                                              |
+| ----------------------------- | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| Stage 1 (pass/fail)           | Does it fit a theme and really use Meta models?    | Frame it under Push the Frontier (software). Every agent calls Meta models through one gateway.                                                 |
+| Impact                        | Real-world potential, fit with a problem statement | Aim at solo builders and founders who need a first working version. Show three different apps built from three prompts.                         |
+| Use of Meta AI tooling        | Did the team go beyond a basic integration?        | Muse Spark for planning, Muse Spark Open for coding workers if it handles tools well (test on day one), Muse Voice Transcribe for spoken ideas. |
+| Technical depth and execution | Sound engineering, real craft                      | Typed state, sandboxed execution, a test-gated loop, a budget guard, and an evaluation harness.                                                 |
+| Demo                          | Working, impressive, holds up live                 | One reliable path, a cached fallback run, and a scripted 3-minute video.                                                                        |
+
 
 Two bonus prizes fit this project: Best Agentic Use-Case ($5,000) and Best Build on Meta Open Weight Models ($10,000, which needs Muse Glimmer or Muse Spark Open). Most Viral ($20,000) rewards engagement on an X post with the demo and is optional.
 
@@ -45,15 +51,19 @@ Two bonus prizes fit this project: Best Agentic Use-Case ($5,000) and Best Build
 
 There are seven roles, and only the runner is plain code, so test results cannot be argued with. Retry limits (N below) are set from the first evaluation runs.
 
-| Role | Job | Model | Input to output | When it fails |
-| --- | --- | --- | --- | --- |
-| Requirements analyst | Turns the idea into user stories, acceptance criteria, a stack choice and a file plan | Muse Spark | Idea text to spec file | Asks a few questions at most, then proceeds on stated assumptions |
-| PM planner | Splits the spec into tasks with dependencies and file ownership, assigns workers, re-plans | Muse Spark | Spec to task graph | A task that fails N times is split or reassigned |
-| Test author | Writes tests from the acceptance criteria before code exists | Muse Spark | Spec to test files | Tests must at least collect and run before the coders start |
-| Dev workers | Implement tasks in their own files using file and shell tools | Muse Spark Open, Muse Spark as fallback | Task, spec and tests to code | Can write only inside their owned paths |
-| Runner (no model) | Runs the tests in Docker and captures logs | None | Workspace to structured pass/fail report | Time and resource caps, then reported as a failure |
-| Fixer | Reads a failing log and patches the code | Muse Spark Open | Failing log and code to patch | After N failed fixes, escalates to the PM planner |
-| Reporter | Writes the README, run summary and cost report | Muse Spark Open | Run log to documents | Falls back to a template |
+
+| Role                 | Job                                                                                        | Model                                   | Input to output                          | When it fails                                                     |
+| -------------------- | ------------------------------------------------------------------------------------------ | --------------------------------------- | ---------------------------------------- | ----------------------------------------------------------------- |
+| Requirements analyst | Turns the idea into user stories, acceptance criteria, a stack choice and a file plan      | Muse Spark                              | Idea text to spec file                   | Asks a few questions at most, then proceeds on stated assumptions |
+| PM planner           | Splits the spec into tasks with dependencies and file ownership, assigns workers, re-plans | Muse Spark                              | Spec to task graph                       | A task that fails N times is split or reassigned                  |
+| Test author          | Writes tests from the acceptance criteria before code exists                               | Muse Spark                              | Spec to test files                       | Tests must at least collect and run before the coders start       |
+| Dev workers          | Implement tasks in their own files using file and shell tools                              | Muse Spark Open, Muse Spark as fallback | Task, spec and tests to code             | Can write only inside their owned paths                           |
+| Runner (no model)    | Runs the tests in Docker and captures logs                                                 | None                                    | Workspace to structured pass/fail report | Time and resource caps, then reported as a failure                |
+| Fixer                | Reads a failing log and patches the code                                                   | Muse Spark Open                         | Failing log and code to patch            | After N failed fixes, escalates to the PM planner                 |
+| Reporter             | Writes the README, run summary and cost report                                             | Muse Spark Open                         | Run log to documents                     | Falls back to a template                                          |
+
+
+
 
 ## Model routing and budget
 
@@ -66,6 +76,8 @@ A single gateway module sends every model call, so cost is capped in code and no
 - **Cheap by default:** develop and debug on the open-weight model through partner credits, and reserve the larger Muse Spark model for planning and final runs.
 - **Fallback:** if Muse Spark Open handles tool calls poorly, move the coders to Muse Spark and keep Muse Spark Open for the reporter and fixer. Decide this on day one from a small test, not by assumption.
 
+
+
 ## Sandbox and verification
 
 Generated code runs only inside Docker, and a build counts as done only when tests the coders did not write turn green. This is also where the "Technical depth" score is earned.
@@ -77,6 +89,8 @@ Generated code runs only inside Docker, and a build counts as done only when tes
 - **Path ownership:** each worker may write only its assigned files, which prevents two coders overwriting each other during parallel work.
 - **Honest reporting:** the final report states which tests passed, which were skipped, and what it cost. Never present a run as green when tests were skipped.
 - **Workshop tie-in:** the Oct 28 session on verifiable agents is a checkpoint to compare against this design.
+
+
 
 ## Repo layout and engineering standards
 
@@ -106,6 +120,8 @@ repo/                 (name still open)
 - **Secrets and CI:** keys only in an ignored env file, never committed. A GitHub Actions job runs the unit tests on every push.
 - **License:** add an open-source license on day one (MIT is the simple default) and credit every dependency of note in the README.
 
+
+
 ## Foundation checklist
 
 The foundation is done when a script sends a spec to Muse Spark, gets a typed task list back, and the runner executes a sample test suite in Docker. Tonight is setup and questions; Tuesday is the technical groundwork.
@@ -129,6 +145,8 @@ The foundation is done when a script sends a spec to Muse Spark, gets a typed ta
 - [ ] Define the Pydantic models for the spec, tasks, run state and test results
 - [ ] Pick the one fixed demo app and write three golden prompts
 - [ ] Attend the 9:45 PM Kathmandu workshop, Agents 101 (multimodal agents)
+
+
 
 ## Evaluation and demo plan
 
@@ -156,17 +174,21 @@ Record several real runs and keep the best one. Do not stage results, and show a
 
 The biggest risks are an unreliable worker model, running out of credits, and breaking the new-work rule, and each has an early check.
 
-| Risk | Mitigation | Check by |
-| --- | --- | --- |
-| Muse Spark Open handles tool calls poorly | Run the same tool-call tests on both models. Fall back to Muse Spark for coders. | Oct 27 |
-| Credits run out | Budget guard in the gateway, cheap models for development, 25% held back for demo runs | Daily cost review |
-| Generated code is flaky | Tests from the spec, bounded loops, one fixed demo app, a narrow stack | Oct 29 first end-to-end run |
-| Scope creep | Thin vertical slice first, feature freeze on the night of Nov 3 | Nov 3 |
-| New-work rule broken | Fresh repo, NEWWORK.md log, README attribution, confirmation in #questions | Oct 26 to 27 |
-| Payment card refused for the API | Test the card before the credits arrive and keep a backup card ready. Modal and Baseten credits are a second route. | Oct 27 |
-| Rate limits stall long runs | Read the limits on day one, add queueing and backoff, and request the higher Baseten limit | Oct 27 |
-| Demo fails or the API is down at recording time | Record several real runs ahead of time, record on Nov 4 daytime and not in the last hour | Nov 4 |
-| Time shortage next to a full-time job | Fixed daily work blocks, with the weekend of Oct 31 to Nov 1 as the main build time (an assumption to confirm) | Oct 28 |
+
+| Risk                                            | Mitigation                                                                                                          | Check by                    |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| Muse Spark Open handles tool calls poorly       | Run the same tool-call tests on both models. Fall back to Muse Spark for coders.                                    | Oct 27                      |
+| Credits run out                                 | Budget guard in the gateway, cheap models for development, 25% held back for demo runs                              | Daily cost review           |
+| Generated code is flaky                         | Tests from the spec, bounded loops, one fixed demo app, a narrow stack                                              | Oct 29 first end-to-end run |
+| Scope creep                                     | Thin vertical slice first, feature freeze on the night of Nov 3                                                     | Nov 3                       |
+| New-work rule broken                            | Fresh repo, NEWWORK.md log, README attribution, confirmation in #questions                                          | Oct 26 to 27                |
+| Payment card refused for the API                | Test the card before the credits arrive and keep a backup card ready. Modal and Baseten credits are a second route. | Oct 27                      |
+| Rate limits stall long runs                     | Read the limits on day one, add queueing and backoff, and request the higher Baseten limit                          | Oct 27                      |
+| Demo fails or the API is down at recording time | Record several real runs ahead of time, record on Nov 4 daytime and not in the last hour                            | Nov 4                       |
+| Time shortage next to a full-time job           | Fixed daily work blocks, with the weekend of Oct 31 to Nov 1 as the main build time (an assumption to confirm)      | Oct 28                      |
+
+
+
 
 ## Build schedule
 
@@ -214,6 +236,8 @@ The foundation covers the first two days; the remaining eight build the vertical
 - [ ] Verify the repo is public, the README table is final, and NEWWORK.md is complete
 - [ ] Submit well before 9:00 PM ET, then post the demo on X if going for Most Viral
 
+
+
 ## Submission checklist
 
 Everything is due Wed Nov 4, 9:00 PM ET. The repo carries the evidence, so most of this is checking links rather than writing new material.
@@ -225,15 +249,20 @@ Everything is due Wed Nov 4, 9:00 PM ET. The repo carries the evidence, so most 
 - [ ] Three golden-prompt apps committed as evaluation results, not as hand-edited demos
 - [ ] Submission form fields (title, description, track, bonus prizes) drafted a day early
 
+
+
 ## Open questions
 
 Decisions that need an organizer answer or a day-one test result, collected here so they do not get lost in Discord threads.
 
-| Question | Where to settle it | Needed by |
-| --- | --- | --- |
-| Are libraries such as LangGraph allowed on the Indie track? | #questions | Oct 27 |
-| Is building on an open-source base within the new-work rule? | #questions | Oct 27 |
-| Foreman or Greenlight as the name? | Pick before creating the repo | Oct 26 |
-| Muse Spark Open or Muse Spark for the coders? | Day-one tool-call tests on both models | Oct 27 |
-| Is the Meta Model API OpenAI-compatible? | The quickstart docs | Oct 27 |
-| Weekend of Oct 31 to Nov 1 free for the main build? | Confirm the work schedule | Oct 28 |
+
+| Question                                                     | Where to settle it                     | Needed by |
+| ------------------------------------------------------------ | -------------------------------------- | --------- |
+| Are libraries such as LangGraph allowed on the Indie track?  | #questions                             | Oct 27    |
+| Is building on an open-source base within the new-work rule? | #questions                             | Oct 27    |
+| Foreman or Greenlight as the name?                           | Pick before creating the repo          | Oct 26    |
+| Muse Spark Open or Muse Spark for the coders?                | Day-one tool-call tests on both models | Oct 27    |
+| Is the Meta Model API OpenAI-compatible?                     | The quickstart docs                    | Oct 27    |
+| Weekend of Oct 31 to Nov 1 free for the main build?          | Confirm the work schedule              | Oct 28    |
+
+

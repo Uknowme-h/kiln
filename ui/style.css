@@ -1,0 +1,137 @@
+/* Kiln floor chrome. Chunky, cream-panel, 16-bit. No build step: pixel fonts
+ * come from Google Fonts at view time; the scene is all procedural Canvas. */
+
+:root {
+  --cream-50: #fffdf5;
+  --cream-100: #fff8e7;
+  --cream-200: #f4e9c7;
+  --cream-300: #e8d9a0;
+  --ink-900: #1a1320;
+  --ink-700: #3d2e4a;
+  --ink-500: #6b5878;
+  --ink-300: #a899b5;
+  --accent: #e06a62;
+  --mint: #5fb07f;
+  --sky: #4fa3af;
+  --lemon: #d8a93c;
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  background: var(--cream-200);
+  color: var(--ink-900);
+  font-family: "Pixelify Sans", system-ui, sans-serif;
+  font-size: 15px;
+  image-rendering: pixelated;
+}
+
+canvas { image-rendering: pixelated; display: block; }
+
+/* ── the three-layer SNES panel ── */
+.panel {
+  background: var(--cream-100);
+  box-shadow:
+    inset 0 0 0 2px var(--ink-900),
+    inset 0 0 0 4px var(--cream-200),
+    inset 0 0 0 5px var(--ink-700);
+  padding: 12px;
+}
+
+/* ── header ── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 16px;
+  background: var(--cream-100);
+  box-shadow: inset 0 0 0 2px var(--ink-900), inset 0 -4px 0 var(--ink-700);
+}
+header .logo {
+  font-family: "Press Start 2P", monospace;
+  font-size: 16px;
+  color: var(--ink-900);
+}
+header .logo em { color: var(--accent); font-style: normal; }
+.tagline { color: var(--ink-500); font-size: 13px; }
+.spacer { flex: 1; }
+
+.chip {
+  font-family: "Press Start 2P", monospace;
+  font-size: 8px;
+  padding: 6px 8px;
+  background: var(--cream-200);
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+}
+.chip.live { background: #d9ecd9; color: #1e5c31; }
+.chip.down { background: #f2d7d3; color: #7c2a20; }
+
+.btn {
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  padding: 10px 14px;
+  background: var(--ink-900);
+  color: var(--cream-50);
+  border: 0;
+  cursor: pointer;
+  box-shadow: inset 0 3px 0 rgba(255,255,255,0.25), inset 0 -4px 0 rgba(0,0,0,0.4);
+}
+.btn:hover { background: var(--ink-700); }
+.btn:active { transform: translateY(2px); box-shadow: inset 0 2px 0 rgba(0,0,0,0.4); }
+.btn:disabled { opacity: 0.5; cursor: default; }
+
+/* ── layout ── */
+main {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 14px;
+  padding: 14px 16px;
+  align-items: start;
+}
+.stage { padding: 10px; }
+.stage canvas { width: 100%; height: auto; }
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  color: var(--ink-700);
+  letter-spacing: 0;
+}
+.side { display: flex; flex-direction: column; gap: 14px; }
+
+/* ── token meter ── */
+.meter {
+  height: 16px;
+  background: var(--cream-300);
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+  overflow: hidden;
+}
+#meter-fill { height: 100%; width: 0%; background: var(--sky); transition: width 0.3s steps(6); }
+.meter-label { margin-top: 8px; color: var(--ink-500); font-variant-numeric: tabular-nums; font-size: 13px; }
+
+/* ── CI lamp ── */
+.ci {
+  font-family: "Press Start 2P", monospace;
+  font-size: 9px;
+  text-align: center;
+  padding: 12px 8px;
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+}
+.ci-idle { background: var(--cream-200); color: var(--ink-500); }
+.ci-green { background: #d9ecd9; color: #1e5c31; }
+.ci-red { background: #f2d7d3; color: #7c2a20; }
+
+/* ── event log ── */
+#log { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+#log li {
+  padding: 5px 2px;
+  border-bottom: 2px solid var(--cream-200);
+  color: var(--ink-500);
+  font-size: 13px;
+}
+#log li:first-child { color: var(--ink-900); }
+#log li::before { content: "▸ "; color: var(--accent); }
