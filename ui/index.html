@@ -39,12 +39,27 @@
           </div>
         </div>
 
+        <!-- The Pairing panel: shown while a run waits for the local companion -->
+        <div id="pairing" class="overlay hidden">
+          <div class="brief-card panel">
+            <h2 class="brief-title">Point the team at your folder</h2>
+            <p class="pair-lead">Run this command on your machine, in the folder where the app should live:</p>
+            <div class="pair-code" id="pair-code">——————</div>
+            <div class="pair-cmd-row">
+              <code id="pair-cmd" class="pair-cmd">kiln-companion connect … --dir .</code>
+              <button id="copy-cmd" class="btn pair-copy" type="button">copy</button>
+            </div>
+            <p class="pair-status" id="pair-status">waiting for your machine…</p>
+            <p class="handoff-note">Needs Python 3.12+ and Docker Desktop. Your files never leave your machine.</p>
+          </div>
+        </div>
+
         <!-- The Handoff: shown when a run finishes -->
         <div id="handoff" class="overlay hidden">
           <div class="brief-card panel">
             <h2 id="handoff-title" class="brief-title">Run finished</h2>
             <ul id="handoff-stats" class="handoff-stats"></ul>
-            <p class="handoff-note">Files land in your own folder via the local companion — coming next.</p>
+            <p class="handoff-note">Files land in your own folder via the local companion.</p>
             <button id="again-btn" class="btn brief-go" type="button">Brief the team again</button>
           </div>
         </div>

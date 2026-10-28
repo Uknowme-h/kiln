@@ -13,6 +13,7 @@ dependencies = [
     "pydantic-settings>=2.6",
     "openai>=1.50",
     "langgraph>=0.2",
+    "websockets>=12",
 ]
 
 [project.optional-dependencies]
@@ -24,6 +25,7 @@ dev = [
 
 [project.scripts]
 kiln = "kiln.main:main"
+kiln-companion = "kiln.companion.cli:main"
 
 [build-system]
 requires = ["setuptools>=75"]

@@ -4,6 +4,8 @@ Kiln turns one typed product idea into a tested web app. A requirements agent wr
 
 This repository was started during the Meta hackathon on 26 October 2026. The foundation runs — the API, the model gateway, the typed contracts, and the sandbox — and the first agent is wired: the requirements analyst turns a typed idea into a validated spec with oracle-named acceptance criteria. The remaining agents are stubs.
 
+The team builds on the **user's own machine**, not the server: `POST /runs` returns a pair code, and a small local companion (`kiln-companion connect CODE --dir .`) claims it over one outbound WebSocket, then executes scoped file tools and the Docker test sandbox in the user's folder — an existing repo, an empty one, or a new one. See `docs/local-companion.md`.
+
 ## Stack
 
 - Python 3.12, FastAPI, and Pydantic
@@ -17,17 +19,18 @@ This repository was started during the Meta hackathon on 26 October 2026. The fo
 ```text
 src/kiln/
   gateway/    model client, routing, budget guard, token log
-  agents/     requirements, planner, test author, worker, fixer, reporter
+  agents/     definitions, prompts, requirements (live), planner, test author, worker, fixer, reporter
   graph/      LangGraph pipeline and typed run state
+  companion/  local companion: wire protocol, scoped executor, run registry, CLI
   sandbox/    Docker runner and JUnit parser
   tools/      file and shell tool schemas
   events/     event log for the live view
-  schemas/    spec, task graph, and test report
-ui/           live run viewer, built after the loop is stable
+  schemas/    spec, task graph, test report, strict json schema
+ui/           live run viewer and client console (Brief, Note Dock, Handoff)
 docs/         design documents, starting with the client console
 evals/        golden prompts and, later, results
 docker/       sandbox image
-tests/        unit tests for the gateway, parser, and API
+tests/        unit tests for the gateway, parser, agents, companion, and API
 ```
 
 ## Setup

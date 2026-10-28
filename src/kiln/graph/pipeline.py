@@ -1,9 +1,8 @@
-"""LangGraph pipeline. Each node only records which phase it entered.
-
-Agent bodies replace these nodes one at a time. The graph import stays behind
-this module so a plain state machine can take its place. The requirements node
-is real: it calls the analyst when one is provided and falls back to the stub
-otherwise, so the graph still walks every phase in tests.
+"""LangGraph pipeline. Stub nodes record their phase; agent bodies replace
+them one at a time. Requirements and planner are real when their callables
+are provided and stubbed otherwise, so the graph still walks every phase in
+tests. The graph import stays behind this module so a plain state machine can
+take its place.
 """
 
 from collections.abc import Callable
@@ -11,38 +10,45 @@ from collections.abc import Callable
 from kiln.events.log import EventLog
 from kiln.graph.state import NODE_ORDER, RunState
 from kiln.schemas.spec import Spec
+from kiln.schemas.tasks import TaskGraph
 
 Analyst = Callable[[str, tuple[str, ...]], Spec]
+Planner = Callable[[Spec, tuple[str, ...]], TaskGraph]
 
 
-def build_pipeline(events: EventLog | None = None, analyst: Analyst | None = None):
+def build_pipeline(
+    events: EventLog | None = None,
+    analyst: Analyst | None = None,
+    planner: Planner | None = None,
+):
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(RunState)
+    bodies = {"requirements": analyst, "planner": planner}
 
     def make_node(phase: str):
-        def node(state: RunState) -> dict[str, str]:
+        body = bodies.get(phase)
+
+        def node(state: RunState) -> dict:
             if not state.get("idea"):
                 raise ValueError("a run needs an idea")
             if events is not None:
                 events.append(phase, f"entered {phase}")
+            if body is None:
+                return {"phase": phase}
+            if phase == "requirements":
+                spec = body(state["idea"], tuple(state.get("user_notes", [])))
+                return {"phase": phase, "spec": spec}
+            if phase == "planner":
+                if "spec" not in state:
+                    raise ValueError("the planner needs a spec from the requirements phase")
+                tasks = body(state["spec"], tuple(state.get("user_notes", [])))
+                return {"phase": phase, "tasks": tasks}
             return {"phase": phase}
 
         return node
 
-    def requirements_node(state: RunState) -> dict:
-        if analyst is None:
-            return make_node("requirements")(state)
-        idea = state.get("idea")
-        if not idea:
-            raise ValueError("a run needs an idea")
-        if events is not None:
-            events.append("requirements", "entered requirements")
-        spec = analyst(idea, tuple(state.get("user_notes", [])))
-        return {"phase": "requirements", "spec": spec}
-
-    graph.add_node("requirements", requirements_node)
-    for name in NODE_ORDER[1:]:
+    for name in NODE_ORDER:
         graph.add_node(name, make_node(name))
 
     graph.add_edge(START, NODE_ORDER[0])

@@ -1,4 +1,5 @@
-"""FastAPI app: health, model routing, the usage counter, and the floor stream."""
+"""FastAPI app: health, model routing, the usage counter, the floor stream,
+and the run registry with its companion relay."""
 
 import asyncio
 import logging
@@ -6,12 +7,18 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from kiln import __version__
 from kiln.agents.roles import Role
+from kiln.companion.protocol import Hello, decode_companion_message
+from kiln.companion.registry import (
+    CompanionRegistry,
+    CompanionUnavailable,
+    PairingError,
+)
 from kiln.config import Settings, load_settings
 from kiln.events.demo import DEMO_AGENTS, script_demo_run
 from kiln.events.log import EventLog
@@ -43,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.usage = UsageLog()
     app.state.floor_queues: set[asyncio.Queue] = set()
     app.state.demo_task: asyncio.Task | None = None
+    app.state.runs = CompanionRegistry()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -124,6 +132,104 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             return {"status": "ignored"}
         await _broadcast(encode_event(NoteAdded(text=text.strip())))
         return {"status": "noted"}
+
+    # ── runs and the companion relay ──
+
+    @app.post("/runs")
+    async def create_run(request: Request) -> dict:
+        """Start a run: returns a one-time pair code. Work begins when the
+        local companion claims the code (docs/local-companion.md)."""
+        body = await request.json()
+        idea = body.get("idea", "") if isinstance(body, dict) else ""
+        if not isinstance(idea, str) or not idea.strip():
+            return {"error": "a run needs an idea"}
+        app.state.runs.expire_stale_codes()
+        run = app.state.runs.create_run(idea.strip())
+        return {
+            "run_id": run.id,
+            "pair_code": run.pair_code,
+            "status": run.status,
+            "connect": f"{settings.companion_command_prefix} connect {run.pair_code} --dir .",
+        }
+
+    @app.get("/runs/{run_id}")
+    def run_status(run_id: str) -> dict:
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        return {
+            "run_id": run.id,
+            "status": run.status,
+            "workspace": run.workspace,
+            "notes": len(run.user_notes),
+        }
+
+    @app.post("/runs/{run_id}/notes")
+    async def add_note(run_id: str, request: Request) -> dict:
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        body = await request.json()
+        text = body.get("text", "") if isinstance(body, dict) else ""
+        if not isinstance(text, str) or not text.strip():
+            return {"status": "ignored"}
+        count = app.state.runs.add_note(run_id, text.strip())
+        await _broadcast(encode_event(NoteAdded(text=text.strip())))
+        return {"status": "queued", "notes": count}
+
+    @app.post("/runs/{run_id}/probe")
+    async def probe_run(run_id: str, request: Request) -> dict:
+        """Dev aid: relay one tool call to the attached companion and return
+        its answer. Proves the machine is connected and scoped."""
+        body = await request.json() if (await request.body()) else {}
+        tool = body.get("tool", "write_file")
+        tool_input = body.get(
+            "input", {"path": "kiln-hello.txt", "content": "the floor was here\n"}
+        )
+        try:
+            output = await app.state.runs.call_tool(run_id, tool, tool_input, timeout=30)
+        except (CompanionUnavailable, PairingError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:  # validation or execution failure on the companion
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        return {"ok": True, "output": output}
+
+    @app.websocket("/companion/ws")
+    async def companion_ws(websocket: WebSocket) -> None:
+        await websocket.accept()
+        run = None
+        try:
+            raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
+            message = decode_companion_message(raw)
+            if not isinstance(message, Hello):
+                await websocket.close(code=4000, reason="first message must be hello")
+                return
+            try:
+                run = app.state.runs.claim(message.code)
+            except PairingError as exc:
+                await websocket.close(code=4001, reason=str(exc))
+                return
+            connection = app.state.runs.attach(run, websocket, message.workspace)
+            from kiln.companion.protocol import HelloAck
+
+            await websocket.send_text(HelloAck(run_id=run.id).model_dump_json())
+            logger.info("companion attached to %s (%s)", run.id, message.workspace)
+            while True:
+                payload = await websocket.receive_text()
+                reply = decode_companion_message(payload)
+                if reply.type == "tool_result":
+                    connection.resolve(reply)
+                # pong needs no handling; its arrival is the liveness signal
+        except TimeoutError:
+            await websocket.close(code=4002, reason="hello timeout")
+        except WebSocketDisconnect:
+            pass
+        except Exception:
+            logger.exception("companion socket failed")
+        finally:
+            if run is not None:
+                app.state.runs.detach(run.id)
+                logger.info("companion detached from %s", run.id)
 
     if UI_DIR.is_dir():
         app.mount("/static", StaticFiles(directory=UI_DIR), name="static")

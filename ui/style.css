@@ -225,3 +225,35 @@ main {
 }
 .handoff-stats li::before { content: "▸ "; color: var(--accent); }
 .handoff-note { margin: 0; color: var(--ink-500); font-size: 12px; text-align: center; }
+
+/* ── pairing panel ── */
+.pair-lead { margin: 0; color: var(--ink-500); font-size: 13px; text-align: center; }
+.pair-code {
+  font-family: "Press Start 2P", monospace;
+  font-size: 22px;
+  letter-spacing: 10px;
+  text-align: center;
+  color: var(--ink-900);
+  background: var(--cream-200);
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+  padding: 12px 0 12px 10px;
+}
+.pair-cmd-row { display: flex; gap: 8px; align-items: stretch; }
+.pair-cmd {
+  flex: 1;
+  font-family: "Pixelify Sans", monospace;
+  font-size: 13px;
+  padding: 10px;
+  background: var(--cream-50);
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.pair-copy { font-size: 8px; padding: 8px 10px; }
+.pair-status {
+  margin: 0;
+  text-align: center;
+  color: var(--lemon);
+  font-weight: 600;
+  font-size: 14px;
+}

@@ -31,6 +31,12 @@ class Settings(BaseSettings):
     sandbox_memory: str = "512m"
     sandbox_cpus: str = "1.0"
 
+    # How users get the companion. Until the package is on PyPI, the honest
+    # default is uvx-from-git; from a checkout, .venv\Scripts\kiln-companion works.
+    companion_command_prefix: str = (
+        "uvx --from git+https://github.com/Uknowme-h/kiln kiln-companion"
+    )
+
 
 def load_settings() -> Settings:
     """Load .env. A file that is only the raw key is accepted as MODEL_API_KEY."""

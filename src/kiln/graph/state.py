@@ -3,12 +3,14 @@
 from typing import TypedDict
 
 from kiln.schemas.spec import Spec
+from kiln.schemas.tasks import TaskGraph
 
 
 class RunState(TypedDict, total=False):
     idea: str
     phase: str
     spec: Spec
+    tasks: TaskGraph
     user_notes: list[str]
 
 

@@ -132,6 +132,6 @@ the schedule cost is close to zero.
 
 | Question | Leaning | Needed by |
 | --- | --- | --- |
-| Companion packaging: `pipx`/`uvx` one-liner vs single-file script | `uvx kiln-companion` — no install step to fumble on camera | Oct 29 |
+| Companion packaging: `pipx`/`uvx` one-liner vs single-file script | `uvx --from git+https://github.com/Uknowme-h/kiln kiln-companion` until a PyPI release makes bare `uvx kiln-companion` work; from a checkout, `.venv\Scripts\kiln-companion` (after `pip install -e .`) needs no network. The command the UI shows comes from the `COMPANION_COMMAND_PREFIX` setting | Oct 29 |
 | Optional read-only file tree in the UI via companion listing | Stretch, after the loop is green | Nov 2 |
 | git integration (auto-branch per run) | No — leave the user's git alone; mention it as post-hackathon | — |

@@ -1,7 +1,7 @@
 /* Glue: load the roster, subscribe to the SSE event contract, drive the scene,
- * and run the client console: Brief (idle) → Note Dock (running) → Handoff
- * (finished). The console talks to the demo endpoints for now; the same
- * handlers switch to POST /runs and /runs/{id}/notes when real runs exist. */
+ * and run the client console: Brief (idle) → Pairing (waiting for the local
+ * companion) → Connected (notes live against the real run). The header demo
+ * button still plays the scripted rehearsal feed: running → Handoff. */
 "use strict";
 
 const canvas = document.getElementById("floor");
@@ -19,23 +19,31 @@ const ideaInput = document.getElementById("idea-input");
 const briefBtn = document.getElementById("brief-btn");
 const dockEl = document.getElementById("note-dock");
 const noteInput = document.getElementById("note-input");
+const pairEl = document.getElementById("pairing");
+const pairCodeEl = document.getElementById("pair-code");
+const pairCmdEl = document.getElementById("pair-cmd");
+const pairStatusEl = document.getElementById("pair-status");
+const copyCmdBtn = document.getElementById("copy-cmd");
 const handoffEl = document.getElementById("handoff");
 const handoffTitle = document.getElementById("handoff-title");
 const handoffStats = document.getElementById("handoff-stats");
 const againBtn = document.getElementById("again-btn");
 
 // ── console state machine ──
-let consoleState = "idle"; // idle | running | finished
+let consoleState = "idle"; // idle | pairing | connected | running | finished
 let lastTests = null; // last test_run_finished event
 let lastUsage = null; // last usage_tick event
 let lastIdea = "";
+let activeRun = null; // the real run from POST /runs, while pairing/connected
+let pollTimer = null;
 
 function setConsole(state) {
   consoleState = state;
   briefEl.classList.toggle("hidden", state !== "idle");
+  pairEl.classList.toggle("hidden", state !== "pairing");
   handoffEl.classList.toggle("hidden", state !== "finished");
-  dockEl.classList.toggle("hidden", state !== "running");
-  stageWrap.classList.toggle("dimmed", state !== "running");
+  dockEl.classList.toggle("hidden", state !== "running" && state !== "connected");
+  stageWrap.classList.toggle("dimmed", state !== "running" && state !== "connected");
 }
 
 function log(text, you) {
@@ -71,6 +79,41 @@ function showHandoff(ev) {
   setConsole("finished");
 }
 
+// ── the pairing flow: Brief → run + pair code → poll until the companion claims it ──
+function stopPolling() {
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = null;
+}
+
+function startPolling(runId) {
+  stopPolling();
+  pollTimer = setInterval(async () => {
+    try {
+      const status = await (await fetch(`/runs/${runId}`)).json();
+      if (status.status === "ready" && consoleState === "pairing") {
+        setConsole("connected");
+        log(`your machine is connected (${status.workspace}) — notes to the team are live`);
+      } else if (status.status === "disconnected" && consoleState === "connected") {
+        pairStatusEl.textContent = "machine disconnected — re-run the same command to resume";
+        setConsole("pairing");
+        log("your machine disconnected — the run is paused, not lost");
+      }
+    } catch {
+      // keep polling; a dropped request is not a dropped run
+    }
+  }, 2000);
+}
+
+function showPairing(run) {
+  activeRun = run;
+  pairCodeEl.textContent = run.pair_code;
+  pairCmdEl.textContent = run.connect;
+  pairStatusEl.textContent = "waiting for your machine…";
+  setConsole("pairing");
+  log(`run created — pair code ${run.pair_code}`);
+  startPolling(run.run_id);
+}
+
 function handle(ev) {
   switch (ev.kind) {
     case "run_started":
@@ -81,6 +124,9 @@ function handle(ev) {
       lastTests = null;
       lastUsage = null;
       lastIdea = ev.idea;
+      // a demo rehearsal replaces any real run still waiting for a machine
+      stopPolling();
+      activeRun = null;
       ciEl.className = "ci ci-idle";
       ciEl.textContent = "building…";
       setConsole("running");
@@ -157,18 +203,41 @@ for (const chip of document.querySelectorAll(".example-chip")) {
 
 async function startRun(idea) {
   briefBtn.disabled = true;
+  stopPolling();
   try {
-    // demo feed today; POST /runs {idea} replaces this when real runs exist
-    await fetch("/demo/run", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ idea }),
-    });
-    log("brief delivered — watch the floor");
+    const resp = await (
+      await fetch("/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ idea }),
+      })
+    ).json();
+    if (resp.error || resp.detail) {
+      log(`run refused: ${resp.error || resp.detail}`);
+      return;
+    }
+    if (!resp.pair_code) {
+      // the classic symptom of an old server process serving new static files
+      log("the server answered but has no run registry — restart uvicorn so it serves the current build");
+      return;
+    }
+    showPairing(resp);
+  } catch (err) {
+    log(`could not create the run: ${err.message}`);
   } finally {
     setTimeout(() => { briefBtn.disabled = !ideaInput.value.trim(); }, 2000);
   }
 }
+
+copyCmdBtn.addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(pairCmdEl.textContent);
+    copyCmdBtn.textContent = "copied";
+    setTimeout(() => (copyCmdBtn.textContent = "copy"), 1200);
+  } catch {
+    log("copy failed — select the command manually");
+  }
+});
 
 briefBtn.addEventListener("click", () => startRun(ideaInput.value.trim()));
 ideaInput.addEventListener("keydown", (e) => {
@@ -195,9 +264,11 @@ dockEl.addEventListener("submit", async (e) => {
   const text = noteInput.value.trim();
   if (!text) return;
   noteInput.value = "";
+  // a connected real run gets the planner mailbox; the demo feed gets its echo
+  const url =
+    consoleState === "connected" && activeRun ? `/runs/${activeRun.run_id}/notes` : "/demo/note";
   try {
-    // demo echo today; POST /runs/{id}/notes replaces this when real runs exist
-    await fetch("/demo/note", {
+    await fetch(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ text }),
@@ -209,6 +280,8 @@ dockEl.addEventListener("submit", async (e) => {
 
 // ── the Handoff ──
 againBtn.addEventListener("click", () => {
+  stopPolling();
+  activeRun = null;
   setConsole("idle");
   ideaInput.focus();
 });

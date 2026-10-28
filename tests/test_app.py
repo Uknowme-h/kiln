@@ -7,7 +7,7 @@ from kiln.events.log import EventLog
 from kiln.graph.pipeline import build_pipeline
 from kiln.graph.state import NODE_ORDER
 from kiln.main import create_app
-from kiln.schemas import Spec
+from kiln.schemas import Spec, TaskGraph
 from kiln.tools import ReadFile, WriteFile
 
 
@@ -55,6 +55,39 @@ def test_the_requirements_node_calls_the_analyst_and_stores_the_spec():
     result = pipeline.invoke({"idea": "a task list", "user_notes": ["add due dates"]})
     assert result["spec"].title == "Tasks"
     assert seen == {"idea": "a task list", "user_notes": ("add due dates",)}
+
+
+def test_the_planner_node_turns_the_spec_into_a_task_graph():
+    def fake_analyst(idea, user_notes):
+        return Spec.model_validate(_spec_payload())
+
+    def fake_planner(spec, user_notes):
+        assert spec.title == "Tasks"
+        return TaskGraph.model_validate(
+            {
+                "spec_title": spec.title,
+                "tasks": [
+                    {
+                        "id": "t1",
+                        "title": "API",
+                        "description": "endpoints",
+                        "owned_paths": ["app/routes.py"],
+                    }
+                ],
+            }
+        )
+
+    pipeline = build_pipeline(analyst=fake_analyst, planner=fake_planner)
+    result = pipeline.invoke({"idea": "a task list"})
+    assert result["tasks"].spec_title == "Tasks"
+    assert result["tasks"].tasks[0].owned_paths == ["app/routes.py"]
+
+
+def test_the_planner_node_needs_a_spec_first():
+    # planner is wired but requirements is stubbed, so no spec exists
+    graph = build_pipeline(planner=lambda spec, notes: None)
+    with pytest.raises(Exception):
+        graph.invoke({"idea": "x"})
 
 
 def _spec_payload() -> dict:
