@@ -50,6 +50,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.usage = UsageLog()
     app.state.floor_queues: set[asyncio.Queue] = set()
     app.state.demo_task: asyncio.Task | None = None
+    app.state.pipeline_task: asyncio.Task | None = None
     app.state.runs = CompanionRegistry()
 
     @app.get("/health")
@@ -95,6 +96,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _broadcast(payload: str) -> None:
         for queue in list(app.state.floor_queues):
             queue.put_nowait(payload)
+
+    async def _send_floor(event) -> None:
+        await _broadcast(encode_event(event))
+
+    async def _start_pipeline(run) -> None:
+        """The full loop on a real run, in the background."""
+        from kiln.gateway.client import Gateway
+        from kiln.graph.orchestrator import run_pipeline
+
+        run.status = "building"
+        gateway = Gateway(
+            settings,
+            BudgetGuard(settings.run_token_ceiling),
+            app.state.usage,
+        )
+        try:
+            green = await run_pipeline(
+                run.id,
+                run.idea,
+                run.user_notes,
+                gateway,
+                app.state.runs,
+                _send_floor,
+                settings.run_token_ceiling,
+            )
+            run.status = "green" if green else "failed"
+        except Exception:
+            logger.exception("pipeline failed for %s", run.id)
+            run.status = "failed"
 
     @app.post("/demo/run")
     async def demo_run(request: Request) -> dict[str, str]:
@@ -214,6 +244,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
             await websocket.send_text(HelloAck(run_id=run.id).model_dump_json())
             logger.info("companion attached to %s (%s)", run.id, message.workspace)
+            if settings.pipeline_autostart and (
+                app.state.pipeline_task is None or app.state.pipeline_task.done()
+            ):
+                app.state.pipeline_task = asyncio.create_task(_start_pipeline(run))
             while True:
                 payload = await websocket.receive_text()
                 reply = decode_companion_message(payload)

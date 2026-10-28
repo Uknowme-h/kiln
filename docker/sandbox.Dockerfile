@@ -2,7 +2,11 @@
 # The runner adds --network none, CPU and memory caps, and mounts only the workspace.
 FROM python:3.12-slim
 
-RUN pip install --no-cache-dir pytest
+# The narrow stack the requirements agent chooses from. The sandbox stays
+# offline during test runs, so these must be baked in: pytest for the suite,
+# Flask because every golden-prompt app is a small Flask service. SQLite is
+# stdlib. When the stack grows, this image grows with it — never the network.
+RUN pip install --no-cache-dir pytest flask
 
 WORKDIR /workspace
 

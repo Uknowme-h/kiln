@@ -35,6 +35,8 @@ def build_docker_args(workspace: Path, settings: Settings, name: str) -> list[st
         "128",
         "--tmpfs",
         "/tmp",
+        "-e",
+        "PYTHONPATH=/workspace",
         "-v",
         f"{mount}:/workspace:rw",
         "-w",

@@ -19,6 +19,7 @@ def make_client() -> TestClient:
             _env_file=None,
             model_api_key="spark-key",
             project_token_ceiling=5000,
+            pipeline_autostart=False,  # attach without firing a real pipeline
         )
     )
     return TestClient(app)

@@ -37,6 +37,10 @@ class Settings(BaseSettings):
         "uvx --from git+https://github.com/Uknowme-h/kiln kiln-companion"
     )
 
+    # Tests and pairing rehearsals turn this off so a companion attach does
+    # not fire a real pipeline run.
+    pipeline_autostart: bool = True
+
 
 def load_settings() -> Settings:
     """Load .env. A file that is only the raw key is accepted as MODEL_API_KEY."""

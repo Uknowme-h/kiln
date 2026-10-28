@@ -30,7 +30,8 @@ class Run:
     id: str
     idea: str
     pair_code: str
-    status: str = "waiting_for_companion"  # waiting | ready | disconnected
+    # waiting | ready | disconnected | building | green | failed
+    status: str = "waiting_for_companion"
     workspace: str = ""
     user_notes: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
