@@ -79,6 +79,16 @@ class UsageTick(BaseModel):
     calls: int = Field(ge=0)
 
 
+class NoteAdded(BaseModel):
+    """A mid-run note from the user, delivered to the planner's mailbox.
+
+    Rendered as an envelope from the client landing on the cork board.
+    """
+
+    kind: Literal["note_added"] = "note_added"
+    text: str = Field(min_length=1)
+
+
 FloorEvent = Annotated[
     RunStarted
     | RunFinished
@@ -86,7 +96,8 @@ FloorEvent = Annotated[
     | TaskAssigned
     | MessageSent
     | TestRunFinished
-    | UsageTick,
+    | UsageTick
+    | NoteAdded,
     Field(discriminator="kind"),
 ]
 

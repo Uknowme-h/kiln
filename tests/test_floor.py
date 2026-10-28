@@ -34,6 +34,17 @@ def test_demo_run_tells_the_full_story_in_order():
     assert kinds.count("usage_tick") >= 1
 
 
+def test_the_demo_rehearses_a_mid_run_client_note():
+    events = list(script_demo_run())
+    notes = [event for event in events if event.kind == "note_added"]
+    assert len(notes) == 1
+    assert notes[0].text
+    note_index = events.index(notes[0])
+    later_kinds = [event.kind for event in events[note_index:]]
+    assert "message_sent" in later_kinds  # the planner answers the note
+    assert later_kinds[-1] == "run_finished"
+
+
 def test_demo_run_needs_no_model_or_workspace():
     first = next(script_demo_run())
     assert isinstance(first, RunStarted)
@@ -59,6 +70,23 @@ def test_demo_trigger_broadcasts_to_the_floor():
     response = client.post("/demo/run")
     assert response.status_code == 200
     assert response.json()["status"] == "started"
+
+
+def test_the_demo_run_accepts_the_typed_idea_from_the_brief():
+    client = make_client()
+    response = client.post("/demo/run", json={"idea": "a bookstore with search"})
+    assert response.status_code == 200
+    first = next(script_demo_run(idea="a bookstore with search"))
+    assert first.idea == "a bookstore with search"
+
+
+def test_the_note_endpoint_echoes_a_client_note_to_the_floor():
+    client = make_client()
+    response = client.post("/demo/note", json={"text": "add due dates"})
+    assert response.status_code == 200
+    assert response.json()["status"] == "noted"
+    empty = client.post("/demo/note", json={"text": "   "})
+    assert empty.json()["status"] == "ignored"
 
 
 def test_a_new_demo_run_replaces_one_still_playing():

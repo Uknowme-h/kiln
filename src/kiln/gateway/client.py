@@ -38,6 +38,7 @@ class ChatTransport:
         model: str,
         messages: list[dict[str, str]],
         max_tokens: int,
+        response_format: dict | None = None,
     ) -> Completion:
         raise NotImplementedError
 
@@ -51,6 +52,7 @@ class OpenAITransport(ChatTransport):
         model: str,
         messages: list[dict[str, str]],
         max_tokens: int,
+        response_format: dict | None = None,
     ) -> Completion:
         from openai import (
             APIConnectionError,
@@ -67,6 +69,7 @@ class OpenAITransport(ChatTransport):
                 model=model,
                 messages=messages,
                 max_tokens=max_tokens,
+                **({"response_format": response_format} if response_format else {}),
             )
         except (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError) as exc:
             raise TransientError(str(exc)) from exc
@@ -115,6 +118,7 @@ class Gateway:
         messages: list[dict[str, str]],
         *,
         max_tokens: int | None = None,
+        response_format: dict | None = None,
     ) -> Completion:
         self._validate_messages(messages)
         route = route_for(role, self.settings)
@@ -126,7 +130,7 @@ class Gateway:
 
         self.budget.reserve(limit)
         try:
-            completion = self._call_with_retry(route, messages, limit)
+            completion = self._call_with_retry(route, messages, limit, response_format)
         except Exception:
             self.budget.release(limit)
             raise
@@ -141,7 +145,11 @@ class Gateway:
         return completion
 
     def _call_with_retry(
-        self, route: Route, messages: list[dict[str, str]], max_tokens: int
+        self,
+        route: Route,
+        messages: list[dict[str, str]],
+        max_tokens: int,
+        response_format: dict | None = None,
     ) -> Completion:
         last_error: TransientError | None = None
         for attempt in range(1, self.max_attempts + 1):
@@ -152,6 +160,7 @@ class Gateway:
                     model=route.model,
                     messages=messages,
                     max_tokens=max_tokens,
+                    response_format=response_format,
                 )
             except TransientError as exc:
                 last_error = exc

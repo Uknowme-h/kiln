@@ -13,6 +13,7 @@ from kiln.events.schema import (
     AgentRef,
     AgentStatus,
     MessageSent,
+    NoteAdded,
     RunFinished,
     RunStarted,
     TaskAssigned,
@@ -86,6 +87,13 @@ def script_demo_run(run_id: str = "demo-1", idea: str = "A to-do app with accoun
     yield AgentStatus(agent=WORKER_1, status="working", detail="writing app/accounts/")
     yield AgentStatus(agent=WORKER_2, status="working", detail="writing app/todos/")
     yield tick()
+    yield tick()
+
+    # a client note lands mid-build; the planner folds it into the plan
+    yield NoteAdded(text="tasks need a due-date field")
+    yield AgentStatus(agent=PLANNER, status="thinking", detail="folding in the client note")
+    yield MessageSent(from_agent="planner", to_agent="worker-2", summary="scope update: due dates")
+    yield AgentStatus(agent=PLANNER, status="done", detail="plan updated")
     yield tick()
 
     yield AgentStatus(agent=WORKER_2, status="done", detail="app/todos/ complete")

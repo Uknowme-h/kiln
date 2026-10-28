@@ -20,7 +20,42 @@
 
   <main>
     <section class="panel stage">
-      <canvas id="floor" width="1000" height="560"></canvas>
+      <div class="stage-wrap">
+        <canvas id="floor" width="1000" height="560"></canvas>
+
+        <!-- The Brief: shown while idle, the client walks in -->
+        <div id="brief" class="overlay">
+          <div class="brief-card panel">
+            <h2 class="brief-title">What should the team build?</h2>
+            <textarea id="idea-input" rows="3"
+              placeholder="A to-do app with user accounts and a REST API"></textarea>
+            <div class="examples">
+              <span class="examples-label">or pick one:</span>
+              <button class="example-chip" type="button">A to-do app with user accounts and a REST API</button>
+              <button class="example-chip" type="button">A URL shortener with click analytics</button>
+              <button class="example-chip" type="button">A bookstore inventory tracker with search</button>
+            </div>
+            <button id="brief-btn" class="btn brief-go" type="button" disabled>Brief the team</button>
+          </div>
+        </div>
+
+        <!-- The Handoff: shown when a run finishes -->
+        <div id="handoff" class="overlay hidden">
+          <div class="brief-card panel">
+            <h2 id="handoff-title" class="brief-title">Run finished</h2>
+            <ul id="handoff-stats" class="handoff-stats"></ul>
+            <p class="handoff-note">Files land in your own folder via the local companion — coming next.</p>
+            <button id="again-btn" class="btn brief-go" type="button">Brief the team again</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- The Note Dock: slip the team a note mid-run -->
+      <form id="note-dock" class="note-dock hidden">
+        <input id="note-input" type="text" autocomplete="off"
+          placeholder="Add a note for the team… (e.g. tasks need a due-date field)" />
+        <button id="note-btn" class="btn" type="submit">Send</button>
+      </form>
     </section>
 
     <aside class="side">

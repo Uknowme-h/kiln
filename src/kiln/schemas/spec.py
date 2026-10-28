@@ -16,6 +16,13 @@ class AcceptanceCriterion(BaseModel):
     given: str = Field(min_length=1)
     when: str = Field(min_length=1)
     then: str = Field(min_length=1)
+    oracle: str = Field(
+        min_length=1,
+        description=(
+            "The exact automated check that proves this criterion, "
+            "e.g. the test file and what it asserts."
+        ),
+    )
 
 
 class FilePlanEntry(BaseModel):

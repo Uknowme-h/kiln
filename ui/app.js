@@ -1,4 +1,7 @@
-/* Glue: load the roster, subscribe to the SSE event contract, drive the scene. */
+/* Glue: load the roster, subscribe to the SSE event contract, drive the scene,
+ * and run the client console: Brief (idle) → Note Dock (running) → Handoff
+ * (finished). The console talks to the demo endpoints for now; the same
+ * handlers switch to POST /runs and /runs/{id}/notes when real runs exist. */
 "use strict";
 
 const canvas = document.getElementById("floor");
@@ -10,9 +13,35 @@ const meterLabel = document.getElementById("meter-label");
 const ciEl = document.getElementById("ci");
 const demoBtn = document.getElementById("demo-btn");
 
-function log(text) {
+const stageWrap = document.querySelector(".stage-wrap");
+const briefEl = document.getElementById("brief");
+const ideaInput = document.getElementById("idea-input");
+const briefBtn = document.getElementById("brief-btn");
+const dockEl = document.getElementById("note-dock");
+const noteInput = document.getElementById("note-input");
+const handoffEl = document.getElementById("handoff");
+const handoffTitle = document.getElementById("handoff-title");
+const handoffStats = document.getElementById("handoff-stats");
+const againBtn = document.getElementById("again-btn");
+
+// ── console state machine ──
+let consoleState = "idle"; // idle | running | finished
+let lastTests = null; // last test_run_finished event
+let lastUsage = null; // last usage_tick event
+let lastIdea = "";
+
+function setConsole(state) {
+  consoleState = state;
+  briefEl.classList.toggle("hidden", state !== "idle");
+  handoffEl.classList.toggle("hidden", state !== "finished");
+  dockEl.classList.toggle("hidden", state !== "running");
+  stageWrap.classList.toggle("dimmed", state !== "running");
+}
+
+function log(text, you) {
   const li = document.createElement("li");
   li.textContent = text;
+  if (you) li.className = "you";
   logEl.prepend(li);
   while (logEl.children.length > 60) logEl.lastChild.remove();
 }
@@ -24,6 +53,24 @@ function setConn(state) {
   else connEl.textContent = "connecting";
 }
 
+function showHandoff(ev) {
+  handoffTitle.textContent = ev.green ? "Run finished — green!" : "Run finished — not green";
+  const rows = [];
+  if (lastTests) {
+    rows.push(`tests — ${lastTests.passed} passed, ${lastTests.failed} failed, ${lastTests.skipped} skipped`);
+  }
+  if (lastUsage) {
+    rows.push(`tokens — ${lastUsage.tokens_used.toLocaleString()} of ${lastUsage.ceiling.toLocaleString()} (${lastUsage.calls} calls)`);
+  }
+  if (lastIdea) rows.push(`brief — “${lastIdea}”`);
+  handoffStats.replaceChildren(...rows.map((row) => {
+    const li = document.createElement("li");
+    li.textContent = row;
+    return li;
+  }));
+  setConsole("finished");
+}
+
 function handle(ev) {
   switch (ev.kind) {
     case "run_started":
@@ -31,13 +78,18 @@ function handle(ev) {
       // kickoff meeting: the analyst and the PM take the new idea to the table
       scene.kickoff("requirements");
       scene.kickoff("planner");
+      lastTests = null;
+      lastUsage = null;
+      lastIdea = ev.idea;
       ciEl.className = "ci ci-idle";
       ciEl.textContent = "building…";
+      setConsole("running");
       log(`run started — “${ev.idea}”`);
       break;
     case "run_finished":
       scene.celebrate();
       log(ev.green ? "run finished — green!" : "run finished — not green");
+      showHandoff(ev);
       break;
     case "agent_status": {
       scene.setStatus(ev.agent.id, ev.status, ev.detail);
@@ -65,13 +117,20 @@ function handle(ev) {
       log(`${ev.from_agent} → ${ev.to_agent}: ${ev.summary}`);
       break;
     case "test_run_finished": {
+      lastTests = ev;
       scene.testRun(ev.green);
       ciEl.className = `ci ${ev.green ? "ci-green" : "ci-red"}`;
       ciEl.textContent = ev.green ? `GREEN ${ev.passed}✓` : `RED ${ev.failed}✗`;
       log(`tests — ${ev.passed} passed, ${ev.failed} failed`);
       break;
     }
+    case "note_added":
+      // the client envelope: flies in from off-screen, pins a lemon sticky
+      scene.clientNote();
+      log(`you → the team: ${ev.text}`, true);
+      break;
     case "usage_tick": {
+      lastUsage = ev;
       const pct = Math.min(100, (ev.tokens_used / ev.ceiling) * 100);
       meterFill.style.width = `${pct}%`;
       meterLabel.textContent = `${ev.tokens_used.toLocaleString()} / ${ev.ceiling.toLocaleString()} tokens`;
@@ -85,6 +144,41 @@ function loop(now) {
   requestAnimationFrame(loop);
 }
 
+// ── the Brief ──
+ideaInput.addEventListener("input", () => {
+  briefBtn.disabled = !ideaInput.value.trim();
+});
+for (const chip of document.querySelectorAll(".example-chip")) {
+  chip.addEventListener("click", () => {
+    ideaInput.value = chip.textContent;
+    briefBtn.disabled = false;
+  });
+}
+
+async function startRun(idea) {
+  briefBtn.disabled = true;
+  try {
+    // demo feed today; POST /runs {idea} replaces this when real runs exist
+    await fetch("/demo/run", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ idea }),
+    });
+    log("brief delivered — watch the floor");
+  } finally {
+    setTimeout(() => { briefBtn.disabled = !ideaInput.value.trim(); }, 2000);
+  }
+}
+
+briefBtn.addEventListener("click", () => startRun(ideaInput.value.trim()));
+ideaInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey && ideaInput.value.trim()) {
+    e.preventDefault();
+    startRun(ideaInput.value.trim());
+  }
+});
+
+// the header button stays as a quick rehearsal trigger with the default idea
 demoBtn.addEventListener("click", async () => {
   demoBtn.disabled = true;
   try {
@@ -95,8 +189,33 @@ demoBtn.addEventListener("click", async () => {
   }
 });
 
+// ── the Note Dock ──
+dockEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = noteInput.value.trim();
+  if (!text) return;
+  noteInput.value = "";
+  try {
+    // demo echo today; POST /runs/{id}/notes replaces this when real runs exist
+    await fetch("/demo/note", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+  } catch (err) {
+    log(`note failed to send: ${err.message}`);
+  }
+});
+
+// ── the Handoff ──
+againBtn.addEventListener("click", () => {
+  setConsole("idle");
+  ideaInput.focus();
+});
+
 async function start() {
   setConn("wait");
+  setConsole("idle");
   const roster = await (await fetch("/api/agents")).json();
   for (const ref of roster) scene.addAgent(ref);
   requestAnimationFrame(loop);

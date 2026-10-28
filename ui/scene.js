@@ -149,6 +149,15 @@ const KilnScene = (() => {
         const f = agents.get(fromId), t = agents.get(toId);
         if (f && t) envelopes.push({ x: f.x, y: f.y - 34, tx: t.x, ty: t.y - 34, t: 0 });
       },
+      // A note from the client: envelope flies in from off-screen to the cork
+      // board and pins a lemon sticky next to the team task cards.
+      clientNote() {
+        envelopes.push({
+          x: -20, y: canvas.height - 40,
+          tx: BOARD_POS.x + 56, ty: BOARD_POS.y + 36, t: 0,
+        });
+        if (notes.length < 8) notes.push({ color: T.accent.lemon, done: false });
+      },
       kickoff(id) {
         const a = agents.get(id), spot = TABLE_SPOTS[id];
         if (a && spot) setRoute(a, [DOOR_OUT, DOOR, DOOR_IN, { x: 340, y: 96 }, spot]);

@@ -135,3 +135,93 @@ main {
 }
 #log li:first-child { color: var(--ink-900); }
 #log li::before { content: "▸ "; color: var(--accent); }
+#log li.you { color: var(--ink-900); background: var(--cream-200); }
+#log li.you::before { content: "✉ "; color: var(--lemon); }
+
+/* ── the client console: Brief overlay, Note Dock, Handoff ── */
+.stage-wrap { position: relative; }
+.stage-wrap.dimmed canvas { filter: brightness(0.55) saturate(0.8); }
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.overlay.hidden, .note-dock.hidden { display: none; }
+
+.brief-card {
+  width: min(520px, 90%);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+}
+.brief-title {
+  margin: 0;
+  font-family: "Press Start 2P", monospace;
+  font-size: 12px;
+  color: var(--ink-900);
+  text-align: center;
+  line-height: 1.6;
+}
+
+#idea-input {
+  width: 100%;
+  resize: vertical;
+  font-family: "Pixelify Sans", sans-serif;
+  font-size: 15px;
+  padding: 10px;
+  color: var(--ink-900);
+  background: var(--cream-50);
+  border: 0;
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+}
+#idea-input:focus { outline: 2px solid var(--sky); outline-offset: 1px; }
+
+.examples { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.examples-label { color: var(--ink-500); font-size: 12px; }
+.example-chip {
+  font-family: "Pixelify Sans", sans-serif;
+  font-size: 12px;
+  padding: 5px 8px;
+  background: var(--cream-200);
+  color: var(--ink-700);
+  border: 0;
+  cursor: pointer;
+  box-shadow: inset 0 0 0 2px var(--ink-500);
+}
+.example-chip:hover { background: var(--cream-300); color: var(--ink-900); }
+
+.brief-go { align-self: center; padding: 12px 22px; font-size: 10px; }
+
+.note-dock {
+  display: flex;
+  gap: 10px;
+  margin-top: 10px;
+}
+#note-input {
+  flex: 1;
+  font-family: "Pixelify Sans", sans-serif;
+  font-size: 15px;
+  padding: 10px;
+  color: var(--ink-900);
+  background: var(--cream-50);
+  border: 0;
+  box-shadow: inset 0 0 0 2px var(--ink-900);
+}
+#note-input:focus { outline: 2px solid var(--sky); outline-offset: 1px; }
+
+.handoff-stats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 14px;
+  color: var(--ink-700);
+}
+.handoff-stats li::before { content: "▸ "; color: var(--accent); }
+.handoff-note { margin: 0; color: var(--ink-500); font-size: 12px; text-align: center; }

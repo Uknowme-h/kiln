@@ -2,7 +2,7 @@
 
 Kiln turns one typed product idea into a tested web app. A requirements agent writes the spec, a planner splits the work, coding agents build in parallel, and a test runner decides when it is done. Models are Meta's: Muse Spark for planning, and Muse Spark Open for coding once that endpoint is configured.
 
-This repository was started during the Meta hackathon on 26 October 2026. Agent behavior is not built yet. What runs today is the foundation: the API, the model gateway, the typed contracts, and the sandbox.
+This repository was started during the Meta hackathon on 26 October 2026. The foundation runs — the API, the model gateway, the typed contracts, and the sandbox — and the first agent is wired: the requirements analyst turns a typed idea into a validated spec with oracle-named acceptance criteria. The remaining agents are stubs.
 
 ## Stack
 
@@ -24,6 +24,7 @@ src/kiln/
   events/     event log for the live view
   schemas/    spec, task graph, and test report
 ui/           live run viewer, built after the loop is stable
+docs/         design documents, starting with the client console
 evals/        golden prompts and, later, results
 docker/       sandbox image
 tests/        unit tests for the gateway, parser, and API

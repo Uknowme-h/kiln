@@ -2,6 +2,7 @@ import pytest
 from pydantic import ValidationError
 
 from kiln.schemas import Spec, Task, TaskGraph
+from kiln.schemas.jsonschema import strict_json_schema
 
 
 def _spec(**overrides):
@@ -19,6 +20,7 @@ def _spec(**overrides):
                 "given": "a list",
                 "when": "I add one",
                 "then": "it is stored",
+                "oracle": "tests/test_tasks.py — adding a task persists it",
             }
         ],
         "file_plan": [{"path": "app.py", "purpose": "the app"}],
@@ -32,6 +34,26 @@ def test_spec_rejects_an_unknown_story_reference():
     payload["acceptance_criteria"][0]["story_id"] = "missing"
     with pytest.raises(ValidationError):
         Spec.model_validate(payload)
+
+
+def test_every_criterion_needs_a_named_oracle():
+    payload = _spec()
+    payload["acceptance_criteria"][0]["oracle"] = ""
+    with pytest.raises(ValidationError):
+        Spec.model_validate(payload)
+    del payload["acceptance_criteria"][0]["oracle"]
+    with pytest.raises(ValidationError):
+        Spec.model_validate(payload)
+
+
+def test_strict_schema_closes_objects_and_requires_every_property():
+    schema = strict_json_schema(Spec)
+    assert schema["additionalProperties"] is False
+    assert set(schema["required"]) == set(schema["properties"])
+    criterion = schema["$defs"]["AcceptanceCriterion"]
+    assert criterion["additionalProperties"] is False
+    assert set(criterion["required"]) == set(criterion["properties"])
+    assert "oracle" in criterion["required"]
 
 
 def test_task_graph_rejects_overlapping_paths_and_cycles():

@@ -102,3 +102,34 @@ def test_unknown_usage_is_charged_at_the_reservation():
     gateway = _gateway(FakeTransport([completion]))
     gateway.complete(Role.PLANNER, [{"role": "user", "content": "plan"}], max_tokens=20)
     assert gateway.budget.snapshot()["used"] == 20
+
+
+def test_response_format_is_forwarded_to_the_transport():
+    completion = Completion(
+        content="{}",
+        model="muse-spark-1.3",
+        prompt_tokens=1,
+        completion_tokens=1,
+    )
+    transport = FakeTransport([completion])
+    gateway = _gateway(transport)
+    fmt = {"type": "json_schema", "json_schema": {"name": "spec", "strict": True, "schema": {}}}
+    gateway.complete(
+        Role.REQUIREMENTS,
+        [{"role": "user", "content": "specify"}],
+        response_format=fmt,
+    )
+    assert transport.calls[0]["response_format"] is fmt
+
+
+def test_response_format_defaults_to_none():
+    completion = Completion(
+        content="ok",
+        model="muse-spark-1.3",
+        prompt_tokens=1,
+        completion_tokens=1,
+    )
+    transport = FakeTransport([completion])
+    gateway = _gateway(transport)
+    gateway.complete(Role.PLANNER, [{"role": "user", "content": "plan"}])
+    assert transport.calls[0]["response_format"] is None
