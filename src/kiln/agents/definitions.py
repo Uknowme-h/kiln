@@ -60,6 +60,7 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         prompt="worker",
         tools=("read_file", "write_file", "shell_command"),
         max_steps=30,
+        max_output_tokens=12_288,  # a task's files rival the suite in size
     ),
     Role.FIXER: RoleDefinition(
         role=Role.FIXER,
@@ -78,6 +79,7 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         tools=("read_file",),
         write_prefixes=("README.md", "docs/"),
         max_steps=10,
+        max_output_tokens=8192,
     ),
 }
 
