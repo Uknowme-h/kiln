@@ -22,6 +22,8 @@ class RoleDefinition:
     write_prefixes: tuple[str, ...] = ()
     max_steps: int = 20
     max_fix_attempts: int = 0
+    # per-role output budget; None uses the gateway default
+    max_output_tokens: int | None = None
 
 
 DEFINITIONS: dict[Role, RoleDefinition] = {
@@ -49,6 +51,7 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         tools=("read_file", "write_file"),
         write_prefixes=("tests/",),
         max_steps=15,
+        max_output_tokens=12_288,  # a full suite is the largest single output
     ),
     Role.WORKER: RoleDefinition(
         role=Role.WORKER,

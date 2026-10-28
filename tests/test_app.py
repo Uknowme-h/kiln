@@ -7,7 +7,7 @@ from kiln.events.log import EventLog
 from kiln.graph.pipeline import build_pipeline
 from kiln.graph.state import NODE_ORDER
 from kiln.main import create_app
-from kiln.schemas import Spec, TaskGraph
+from kiln.schemas import Spec, TaskGraph, TestSuite
 from kiln.tools import ReadFile, WriteFile
 
 
@@ -88,6 +88,31 @@ def test_the_planner_node_needs_a_spec_first():
     graph = build_pipeline(planner=lambda spec, notes: None)
     with pytest.raises(Exception):
         graph.invoke({"idea": "x"})
+
+
+def test_the_test_author_node_turns_the_spec_into_a_suite():
+    def fake_analyst(idea, user_notes):
+        return Spec.model_validate(_spec_payload())
+
+    def fake_author(spec):
+        assert spec.acceptance_criteria[0].id == "c1"
+        return TestSuite.model_validate(
+            {
+                "spec_title": spec.title,
+                "files": [
+                    {
+                        "path": "tests/test_tasks.py",
+                        "content": "def test_x():\n    ...\n",
+                        "covers": ["c1"],
+                    }
+                ],
+            },
+            context={"criterion_ids": ["c1"]},
+        )
+
+    pipeline = build_pipeline(analyst=fake_analyst, test_author=fake_author)
+    result = pipeline.invoke({"idea": "a task list"})
+    assert result["tests"].files[0].path == "tests/test_tasks.py"
 
 
 def _spec_payload() -> dict:

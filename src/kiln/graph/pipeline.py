@@ -10,21 +10,24 @@ from collections.abc import Callable
 from kiln.events.log import EventLog
 from kiln.graph.state import NODE_ORDER, RunState
 from kiln.schemas.spec import Spec
+from kiln.schemas.suite import TestSuite
 from kiln.schemas.tasks import TaskGraph
 
 Analyst = Callable[[str, tuple[str, ...]], Spec]
 Planner = Callable[[Spec, tuple[str, ...]], TaskGraph]
+TestAuthor = Callable[[Spec], TestSuite]
 
 
 def build_pipeline(
     events: EventLog | None = None,
     analyst: Analyst | None = None,
     planner: Planner | None = None,
+    test_author: TestAuthor | None = None,
 ):
     from langgraph.graph import END, START, StateGraph
 
     graph = StateGraph(RunState)
-    bodies = {"requirements": analyst, "planner": planner}
+    bodies = {"requirements": analyst, "planner": planner, "test_author": test_author}
 
     def make_node(phase: str):
         body = bodies.get(phase)
@@ -44,6 +47,11 @@ def build_pipeline(
                     raise ValueError("the planner needs a spec from the requirements phase")
                 tasks = body(state["spec"], tuple(state.get("user_notes", [])))
                 return {"phase": phase, "tasks": tasks}
+            if phase == "test_author":
+                if "spec" not in state:
+                    raise ValueError("the test author needs a spec from the requirements phase")
+                tests = body(state["spec"])
+                return {"phase": phase, "tests": tests}
             return {"phase": phase}
 
         return node

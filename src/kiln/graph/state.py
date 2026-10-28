@@ -3,6 +3,7 @@
 from typing import TypedDict
 
 from kiln.schemas.spec import Spec
+from kiln.schemas.suite import TestSuite
 from kiln.schemas.tasks import TaskGraph
 
 
@@ -11,6 +12,7 @@ class RunState(TypedDict, total=False):
     phase: str
     spec: Spec
     tasks: TaskGraph
+    tests: TestSuite
     user_notes: list[str]
 
 
