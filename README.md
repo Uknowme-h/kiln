@@ -1,8 +1,14 @@
+
+
+
+
 # Kiln
 
 Kiln turns one typed product idea into a tested web app. A requirements agent gathers the spec (and may ask you a few questions), a planner explores the workspace and splits the work with a shared contract — then pauses for you to approve the plan in the companion terminal — two coding agents build in parallel on your machine without overwriting each other, and a test runner decides when it is done. The contract is written to `docs/contract.md`, and clicking any agent on the floor shows its recorded model and tool I/O. Models are Meta's: Muse Spark for planning, and Muse Spark Open for coding once that endpoint is configured.
 
 The team builds on the **user's own machine**, not the server: `POST /runs` returns a pair code, and a small local companion (`kiln-companion connect CODE --dir .`) claims it over one outbound WebSocket. File tools, shell commands, installs, and tests run locally. Every command that needs consent is approved in the companion terminal. See `docs/local-companion.md` and `docs/dev-environment.md`.
+
+https://github.com/user-attachments/assets/b8a48f78-ac72-41db-90e6-fcbd476b1877
 
 ## Stack
 
