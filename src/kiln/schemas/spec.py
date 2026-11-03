@@ -1,6 +1,12 @@
 """Typed spec produced by the requirements analyst."""
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, model_validator
+
+from kiln.stacks.profiles import STACK_IDS
+
+StackId = Literal["python", "node"]
 
 
 class UserStory(BaseModel):
@@ -33,7 +39,11 @@ class FilePlanEntry(BaseModel):
 class Spec(BaseModel):
     title: str = Field(min_length=1)
     summary: str = Field(min_length=1)
-    stack: str = Field(min_length=1)
+    stack: str = Field(min_length=1, description="Human-readable stack description")
+    stack_id: StackId = Field(
+        default="python",
+        description=f"Machine stack id; one of {', '.join(STACK_IDS)}",
+    )
     user_stories: list[UserStory] = Field(min_length=1)
     acceptance_criteria: list[AcceptanceCriterion] = Field(min_length=1)
     file_plan: list[FilePlanEntry] = Field(min_length=1)

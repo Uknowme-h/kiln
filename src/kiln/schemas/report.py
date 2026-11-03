@@ -15,3 +15,10 @@ class ReportBundle(BaseModel):
     readme: str = Field(min_length=1)
     run_summary: str = Field(min_length=1)
     cost_report: str = Field(min_length=1)
+    agents_md: str = Field(
+        default="",
+        description=(
+            "Root AGENTS.md for follow-on work: stack, design tokens, "
+            "auth/persistence decisions, and how to run tests."
+        ),
+    )

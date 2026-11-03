@@ -61,6 +61,7 @@ def test_roster_endpoint_lists_the_seated_agents():
         "test_author",
         "worker",
         "fixer",
+        "reviewer",
         "reporter",
     }
 

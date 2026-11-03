@@ -88,7 +88,7 @@ def test_an_invalid_reply_is_retried_once_with_the_error_shown():
     spec = requirements.run(gateway, "a to-do app")
     assert spec.title == "Tasks"
     assert len(gateway.calls) == 2
-    retry_message = gateway.calls[1]["messages"][1]["content"]
+    retry_message = gateway.calls[1]["messages"][-1]["content"]
     assert "validation_error" in retry_message
     assert "json_invalid" in retry_message  # the pydantic error type is shown
 

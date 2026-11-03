@@ -30,12 +30,23 @@ def test_runs_need_an_idea():
     assert client.post("/runs", json={"idea": "  "}).json()["error"]
 
 
+def test_approval_answer_needs_a_run_and_a_companion():
+    client = make_client()
+    missing = client.post("/runs/run-nope/approvals", json={"approved": True}).json()
+    assert missing["error"] == "unknown run"
+    run = client.post("/runs", json={"idea": "a bookstore"}).json()
+    lonely = client.post(f"/runs/{run['run_id']}/approvals", json={"approved": True}).json()
+    assert lonely["ok"] is False
+    assert "no companion" in lonely["error"]
+
+
 def test_pair_attach_updates_status_and_disconnect_reverts_it():
     client = make_client()
     created = client.post("/runs", json={"idea": "a to-do app"}).json()
     run_id, code = created["run_id"], created["pair_code"]
     assert created["status"] == "waiting_for_companion"
-    assert code in created["connect"]
+    assert "listen" in created["connect"]
+    assert code not in created["connect"]
 
     with client.websocket_connect("/companion/ws") as ws:
         ws.send_json(
@@ -49,6 +60,22 @@ def test_pair_attach_updates_status_and_disconnect_reverts_it():
         run = client.app.state.runs.get_run(run_id)
         assert run.status == "ready"
         assert run.workspace == "D:\\work\\todo"
+
+    assert client.get(f"/runs/{run_id}").json()["status"] == "disconnected"
+
+
+def test_hello_without_workspace_leaves_the_run_paired():
+    client = make_client()
+    created = client.post("/runs", json={"idea": "a to-do app"}).json()
+    run_id, code = created["run_id"], created["pair_code"]
+
+    with client.websocket_connect("/companion/ws") as ws:
+        ws.send_json({"type": "hello", "code": code, "workspace": "", "version": "0.1.0"})
+        ack = ws.receive_json()
+        assert ack["type"] == "hello_ack"
+        run = client.app.state.runs.get_run(run_id)
+        assert run.status == "paired"
+        assert run.workspace == ""
 
     assert client.get(f"/runs/{run_id}").json()["status"] == "disconnected"
 

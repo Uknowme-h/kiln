@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from kiln.agents import planner
@@ -127,3 +129,111 @@ def test_two_invalid_replies_are_counted_as_a_failure():
     with pytest.raises(planner.PlannerError):
         planner.run(gateway, _spec())
     assert len(gateway.calls) == 2
+
+
+# ── the agentic path: explore (read-only + one file) then emit the graph ──
+
+
+def _tool_turn(name, args, call_id=None):
+    from kiln.gateway.client import ModelToolCall
+
+    return Completion(
+        content="",
+        model="muse-spark-1.3",
+        prompt_tokens=1,
+        completion_tokens=1,
+        tool_calls=(
+            ModelToolCall(id=call_id or f"c-{name}", name=name, arguments=json.dumps(args)),
+        ),
+    )
+
+
+class ToolGateway(FakeGateway):
+    """The explore turns return real Completion objects; the graph turn returns JSON text."""
+
+    def complete(self, role, messages, **kwargs):
+        self.calls.append({"role": role, "messages": messages, **kwargs})
+        if not self.script:
+            raise AssertionError(f"unexpected extra model call (call {len(self.calls)})")
+        step = self.script.pop(0)
+        if isinstance(step, Completion):
+            return step
+        if isinstance(step, Exception):
+            raise step
+        return Completion(
+            content=step, model="muse-spark-1.3", prompt_tokens=1, completion_tokens=1
+        )
+
+
+def test_the_agentic_planner_explores_then_emits_the_graph():
+    import asyncio
+
+    gateway = ToolGateway(
+        [
+            _tool_turn("list_dir", {"path": "."}),
+            _tool_turn("write_file", {"path": "docs/plan.md", "content": "the plan"}),
+            _tool_turn("grep", {"pattern": "TODO"}),  # still exploring
+            _valid_json(),  # 4th explore turn: no tool calls → stop
+            _valid_json(),  # the graph turn
+        ]
+    )
+    tool_log = []
+
+    async def call_tool(name, args):
+        tool_log.append((name, args))
+        return "(done)"
+
+    graph = asyncio.run(planner.run_agentic(gateway, _spec(), call_tool=call_tool))
+    assert isinstance(graph, TaskGraph)
+    assert [name for name, _ in tool_log] == ["list_dir", "write_file", "grep"]
+    # three explore turns with tools + one no-tool explore turn + the graph turn
+    assert len(gateway.calls) == 5
+    assert all("tools" in call for call in gateway.calls[:4])
+    # the graph turn is the last call, with structured output and no tools
+    last = gateway.calls[-1]
+    assert last["response_format"]["json_schema"]["name"] == "task_graph"
+    assert "tools" not in last
+    # the tool results went back as tool messages before the graph ask
+    roles = [m["role"] for m in last["messages"]]
+    assert "tool" in roles and roles[-1] == "user"
+
+
+def test_the_agentic_planner_survives_an_exploration_failure():
+    import asyncio
+
+    # the explore turn explodes; the one-shot path must still deliver a graph
+    gateway = ToolGateway([RuntimeError("relay down"), _valid_json()])
+
+    async def call_tool(name, args):
+        raise AssertionError("never reached")
+
+    graph = asyncio.run(planner.run_agentic(gateway, _spec(), call_tool=call_tool))
+    assert isinstance(graph, TaskGraph)
+
+
+def test_render_plan_markdown_covers_contract_and_tasks():
+    spec = _spec()
+    graph = TaskGraph.model_validate(
+        {
+            "spec_title": "Tasks",
+            "contract": {
+                "modules": ["app.store: add(title: str) -> Task"],
+                "routes": [
+                    {"method": "POST", "path": "/tasks", "request": "Task", "response": "Task"}
+                ],
+                "shared_files": ["app.py"],
+            },
+            "tasks": [
+                {"id": "t1", "title": "Scaffold", "description": "d",
+                 "owned_paths": ["app.py"], "kind": "scaffold"},
+                {"id": "t2", "title": "API", "description": "d",
+                 "depends_on": ["t1"], "owned_paths": ["routes.py"], "covers": ["c1"]},
+            ],
+        }
+    )
+    doc = planner.render_plan_markdown(spec, graph)
+    assert "app.store: add" in doc
+    assert "POST /tasks" in doc
+    assert "app.py" in doc
+    assert "**t2** [feature] (after t1)" in doc
+    assert "covers c1" in doc

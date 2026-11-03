@@ -2,6 +2,7 @@
 and the run registry with its companion relay."""
 
 import asyncio
+import json
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -22,7 +23,7 @@ from kiln.companion.registry import (
 from kiln.config import Settings, load_settings
 from kiln.events.demo import DEMO_AGENTS, script_demo_run
 from kiln.events.log import EventLog
-from kiln.events.schema import NoteAdded, encode_event
+from kiln.events.schema import ApprovalPending, ApprovalResolved, NoteAdded, encode_event
 from kiln.gateway.budget import BudgetGuard
 from kiln.gateway.routing import route_for
 from kiln.gateway.usage import UsageLog
@@ -100,17 +101,102 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def _send_floor(event) -> None:
         await _broadcast(encode_event(event))
 
+    async def _relay_approval_state(progress) -> None:
+        """Mirror the companion's waiting-for-approval state onto the floor."""
+        if progress.state == "awaiting_approval" and progress.detail != "heartbeat":
+            await _send_floor(
+                ApprovalPending(
+                    agent_id=progress.agent or "team",
+                    action=progress.action or "command",
+                    summary=progress.detail,
+                    lines=list(progress.lines or []),
+                    note=progress.note or "",
+                    allow_run_scope=bool(progress.allow_run_scope),
+                    questions=[
+                        {
+                            "header": q.header,
+                            "question": q.question,
+                            "options": list(q.options),
+                            "multiple": bool(q.multiple),
+                        }
+                        for q in (progress.questions or [])
+                    ],
+                )
+            )
+        elif progress.state == "approval_resolved":
+            await _send_floor(
+                ApprovalResolved(
+                    agent_id=progress.agent or "team", approved=bool(progress.approved)
+                )
+            )
+
     async def _start_pipeline(run) -> None:
         """The full loop on a real run, in the background."""
+        from kiln.agents.transcript import TranscriptLog
+        from kiln.debug_log import open_run_debug_log
+        from kiln.events.schema import TranscriptTick
         from kiln.gateway.client import Gateway
+        from kiln.gateway.usage import UsageLog
         from kiln.graph.orchestrator import run_pipeline
 
         run.status = "building"
+        loop = asyncio.get_running_loop()
+        debug_root = Path(settings.debug_log_dir) / run.id if settings.debug else None
+        debug_log = open_run_debug_log(
+            enabled=settings.debug,
+            run_id=run.id,
+            idea=run.idea,
+            workspace=run.workspace or "",
+            root=debug_root,
+        )
+        run.debug_log = debug_log
+
+        def tick(entry) -> None:
+            # Fired from gateway worker threads too — hop back to the loop and
+            # broadcast a light tick; the drawer fetches the heavy entry itself.
+            if debug_log is not None:
+                debug_log.append_transcript(entry)
+            event = TranscriptTick(agent_id=entry.agent_id, seq=entry.seq, summary=entry.summary())
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(_broadcast(encode_event(event)))
+            )
+
+        transcript = TranscriptLog(listener=tick)
+        run.transcript = transcript
+        # Per-run usage ledger (also mirrored into process-wide via dual listener).
+        run_usage = UsageLog(
+            listener=(debug_log.append_usage if debug_log is not None else None)
+        )
+
+        def mirror_project_usage(record) -> None:
+            with app.state.usage._lock:
+                app.state.usage.records.append(record)
+
+        if debug_log is not None:
+            prev = run_usage.listener
+
+            def both(record) -> None:
+                if prev is not None:
+                    prev(record)
+                mirror_project_usage(record)
+
+            run_usage.listener = both
+        else:
+            run_usage.listener = mirror_project_usage
+
         gateway = Gateway(
             settings,
             BudgetGuard(settings.run_token_ceiling),
-            app.state.usage,
+            run_usage,
+            transcript=transcript,
         )
+
+        async def send_floor(event) -> None:
+            await _send_floor(event)
+            if debug_log is not None:
+                debug_log.append_event(event)
+
+        green: bool | None = None
         try:
             green = await run_pipeline(
                 run.id,
@@ -118,13 +204,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 run.user_notes,
                 gateway,
                 app.state.runs,
-                _send_floor,
+                send_floor,
                 settings.run_token_ceiling,
+                settings,
+                transcript=transcript,
             )
             run.status = "green" if green else "failed"
         except Exception:
             logger.exception("pipeline failed for %s", run.id)
             run.status = "failed"
+            green = False
+        finally:
+            if debug_log is not None:
+                debug_log.finish(
+                    status=run.status,
+                    green=green,
+                    usage_summary=run_usage.summary(),
+                )
 
     @app.post("/demo/run")
     async def demo_run(request: Request) -> dict[str, str]:
@@ -165,10 +261,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # ── runs and the companion relay ──
 
+    def _maybe_start_pipeline(run) -> None:
+        """Kick the full loop once a workspace is locked (connect or UI pick)."""
+        if not settings.pipeline_autostart:
+            return
+        if not run.workspace:
+            return
+        if app.state.pipeline_task is not None and not app.state.pipeline_task.done():
+            return
+        app.state.pipeline_task = asyncio.create_task(_start_pipeline(run))
+
     @app.post("/runs")
     async def create_run(request: Request) -> dict:
         """Start a run: returns a one-time pair code. Work begins when the
-        local companion claims the code (docs/local-companion.md)."""
+        local companion claims the code and a workspace is locked
+        (docs/local-companion.md)."""
         body = await request.json()
         idea = body.get("idea", "") if isinstance(body, dict) else ""
         if not isinstance(idea, str) or not idea.strip():
@@ -179,7 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "run_id": run.id,
             "pair_code": run.pair_code,
             "status": run.status,
-            "connect": f"{settings.companion_command_prefix} connect {run.pair_code} --dir .",
+            "connect": f"{settings.companion_command_prefix} listen",
         }
 
     @app.get("/runs/{run_id}")
@@ -192,7 +299,86 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "status": run.status,
             "workspace": run.workspace,
             "notes": len(run.user_notes),
+            "environment": run.environment,
         }
+
+    @app.get("/runs/{run_id}/transcript")
+    def run_transcript(run_id: str, agent: str | None = None, after: int = 0) -> dict:
+        """The recorded model/tool I/O for one run, fetched when the user clicks
+        an agent on the floor. Heavy by design — never broadcast on the SSE floor.
+        The API key is never in here: prompts and outputs only."""
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        log = getattr(run, "transcript", None)
+        if log is None:
+            return {"agents": [], "entries": []}
+        if agent:
+            entries = log.for_agent(agent, after=after)
+        else:
+            # without an agent filter, only the roster is cheap enough to serve
+            entries = []
+        return {
+            "agents": log.agents(),
+            "entries": [entry.model_dump(mode="json") for entry in entries],
+        }
+
+    @app.get("/runs/{run_id}/browse")
+    async def browse_run(run_id: str, path: str = "") -> dict:
+        """List host directories via the attached companion (UI folder picker)."""
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        if run.status not in ("paired", "ready", "building", "disconnected"):
+            return {"error": "companion not attached yet"}
+        try:
+            raw = await app.state.runs.call_tool(
+                run_id, "browse_host", {"path": path or ""}, timeout=30
+            )
+        except (CompanionUnavailable, PairingError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            listing = json.loads(raw)
+        except json.JSONDecodeError:
+            return {"ok": False, "error": "companion returned a bad browse payload"}
+        return {"ok": True, **listing}
+
+    @app.post("/runs/{run_id}/workspace")
+    async def set_run_workspace(run_id: str, request: Request) -> dict:
+        """Lock the companion's build folder (after listen pairing) and start work."""
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        path = body.get("path", "")
+        create = bool(body.get("create", False))
+        if not isinstance(path, str) or not path.strip():
+            return {"ok": False, "error": "path is required"}
+        try:
+            raw = await app.state.runs.call_tool(
+                run_id,
+                "set_workspace",
+                {"path": path.strip(), "create": create},
+                timeout=30,
+            )
+        except (CompanionUnavailable, PairingError) as exc:
+            return {"ok": False, "error": str(exc)}
+        except Exception as exc:
+            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+        try:
+            payload = json.loads(raw)
+            locked = payload.get("workspace", path.strip())
+        except json.JSONDecodeError:
+            locked = path.strip()
+        app.state.runs.mark_workspace(run_id, str(locked))
+        run = app.state.runs.get_run(run_id)
+        if run is not None:
+            _maybe_start_pipeline(run)
+        return {"ok": True, "workspace": str(locked), "status": run.status if run else "ready"}
 
     @app.post("/runs/{run_id}/notes")
     async def add_note(run_id: str, request: Request) -> dict:
@@ -206,6 +392,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         count = app.state.runs.add_note(run_id, text.strip())
         await _broadcast(encode_event(NoteAdded(text=text.strip())))
         return {"status": "queued", "notes": count}
+
+    @app.post("/runs/{run_id}/approvals")
+    async def answer_approval(run_id: str, request: Request) -> dict:
+        """The floor's answer to a pending shell approval or ask_user questionnaire.
+        Relayed to the companion; races the terminal for the same prompt."""
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        body = await request.json()
+        if not isinstance(body, dict):
+            body = {}
+        raw_answers = body.get("answers")
+        answers: list[list[str]] | None = None
+        if isinstance(raw_answers, list):
+            answers = []
+            for item in raw_answers:
+                if isinstance(item, list):
+                    answers.append([str(x) for x in item if str(x).strip()])
+                elif isinstance(item, str) and item.strip():
+                    answers.append([item.strip()])
+                else:
+                    answers.append([])
+        approved = bool(body.get("approved", answers is not None))
+        scope = body.get("scope", "once")
+        feedback = body.get("feedback", "")
+        if scope not in ("once", "run"):
+            scope = "once"
+        if not isinstance(feedback, str):
+            feedback = ""
+        try:
+            await app.state.runs.answer_approval(
+                run_id,
+                approved,
+                scope=scope,
+                feedback=feedback.strip()[:500],
+                answers=answers,
+            )
+        except CompanionUnavailable as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
 
     @app.post("/runs/{run_id}/probe")
     async def probe_run(run_id: str, request: Request) -> dict:
@@ -239,20 +465,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             except PairingError as exc:
                 await websocket.close(code=4001, reason=str(exc))
                 return
-            connection = app.state.runs.attach(run, websocket, message.workspace)
+            connection = app.state.runs.attach(
+                run, websocket, message.workspace, message.environment
+            )
             from kiln.companion.protocol import HelloAck
 
             await websocket.send_text(HelloAck(run_id=run.id).model_dump_json())
-            logger.info("companion attached to %s (%s)", run.id, message.workspace)
-            if settings.pipeline_autostart and (
-                app.state.pipeline_task is None or app.state.pipeline_task.done()
-            ):
-                app.state.pipeline_task = asyncio.create_task(_start_pipeline(run))
+            logger.info(
+                "companion attached to %s (status=%s workspace=%s)",
+                run.id,
+                run.status,
+                run.workspace or "(pending)",
+            )
+            # connect --dir locks the folder in Hello → ready → start now.
+            # listen leaves workspace empty (paired); UI POST /workspace starts later.
+            if run.status == "ready":
+                _maybe_start_pipeline(run)
             while True:
                 payload = await websocket.receive_text()
                 reply = decode_companion_message(payload)
                 if reply.type == "tool_result":
                     connection.resolve(reply)
+                elif reply.type == "progress":
+                    connection.touch(reply.id)  # alive: push the call's deadline out
+                    await _relay_approval_state(reply)
                 # pong needs no handling; its arrival is the liveness signal
         except TimeoutError:
             await websocket.close(code=4002, reason="hello timeout")

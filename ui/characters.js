@@ -120,11 +120,38 @@ const KilnChars = (() => {
       c1: hex(A.mint), pants: hex(T.ink[700]), mouth: "smile", apron: hex(T.cream[100]), ledger: true },
   };
 
+  const WORKER_VARIANTS = [
+    { skin: "brown", hairColor: hex(A.coral), c1: hex(A.coral) },
+    { skin: "dark", hairColor: hex(A.mint), c1: hex(A.mint) },
+    { skin: "tan", hairColor: hex(A.sky), c1: hex(A.sky) },
+    { skin: "light", hairColor: hex(A.lemon), c1: hex(A.lemon) },
+    { skin: "brown", hairColor: hex(A.lilac), c1: hex(A.lilac) },
+    { skin: "tan", hairColor: hex(A.peach), c1: hex(A.peach) },
+  ];
+
+  function workerRecipe(id) {
+    if (RECIPES[id]) return RECIPES[id];
+    const m = /^worker-(\d+)$/.exec(id);
+    if (!m) return RECIPES["worker-1"];
+    const v = WORKER_VARIANTS[(parseInt(m[1], 10) - 1) % WORKER_VARIANTS.length];
+    return {
+      skin: v.skin,
+      hairStyle: "band",
+      hairColor: v.hairColor,
+      build: "heavy",
+      c1: v.c1,
+      pants: hex(T.ink[700]),
+      mouth: "flat",
+      belt: hex(T.ink[900]),
+      trowel: true,
+    };
+  }
+
   const cache = new Map();
   function frames(id) {
     let f = cache.get(id);
     if (!f) {
-      const r = RECIPES[id] || RECIPES["worker-1"];
+      const r = workerRecipe(id);
       f = { idle: compile(r, 0), stepA: compile(r, 1), stepB: compile(r, 2), accent: r.c1 };
       cache.set(id, f);
     }

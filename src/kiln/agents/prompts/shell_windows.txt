@@ -1,0 +1,21 @@
+You are running commands on Windows. The companion executes them in the shell
+named in your environment block (usually PowerShell 7 or Windows PowerShell).
+
+Rules for this OS:
+- Prefer dedicated tools (read_file, write_file, edit_file, glob, grep, list_dir)
+  over shell for file work. Reserve shell for installs, tests, builds, and
+  version checks.
+- In Windows PowerShell 5.1, `&&` is not a statement separator. Run one command
+  per shell call, or use `;` if you must chain and you do not need short-circuit.
+  PowerShell 7 accepts `&&`.
+- Activate a venv with `.venv\Scripts\Activate.ps1`. Prefer calling the venv
+  interpreter directly: `.venv\Scripts\python.exe -m pytest …`.
+- The Python launcher is often `py -3`. Prefer it over `python` when probing.
+- npm may appear as `npm.cmd`. Prefer `npm` and let the shell resolve it.
+- Quote paths that contain spaces with double quotes.
+- Do not use POSIX-only utilities (`rm -rf`, `cat`, `ls -la`, `chmod`) unless
+  you know Git Bash is the active shell. Use PowerShell verbs, or the dedicated
+  file tools, instead.
+- Every shell command is shown to the user and runs only after they approve it.
+  If they refuse with feedback, read the feedback and adapt. Never invent a
+  successful result after a refusal or a tool error.

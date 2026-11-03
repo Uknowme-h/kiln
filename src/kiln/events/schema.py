@@ -89,6 +89,47 @@ class NoteAdded(BaseModel):
     text: str = Field(min_length=1)
 
 
+class FloorQuestion(BaseModel):
+    header: str = ""
+    question: str = Field(min_length=1)
+    options: list[str] = Field(default_factory=list)
+    multiple: bool = False
+
+
+class ApprovalPending(BaseModel):
+    """An agent's command or ask_user questions waiting for the user's answer.
+
+    The floor renders the same dialog the companion terminal shows — the exact
+    lines under ``lines``, or selectable ``questions`` for ask_user — and the
+    user may answer in either place; the reply is relayed to the companion.
+    """
+
+    kind: Literal["approval_pending"] = "approval_pending"
+    agent_id: str = Field(min_length=1)
+    action: str = Field(min_length=1)
+    summary: str = ""
+    lines: list[str] = Field(default_factory=list)
+    note: str = ""
+    allow_run_scope: bool = False
+    questions: list[FloorQuestion] = Field(default_factory=list)
+
+
+class ApprovalResolved(BaseModel):
+    kind: Literal["approval_resolved"] = "approval_resolved"
+    agent_id: str = Field(min_length=1)
+    approved: bool
+
+
+class TranscriptTick(BaseModel):
+    """A transcript entry was recorded for an agent. Lightweight: the full
+    entry is fetched over REST, never broadcast — prompts are too big for SSE."""
+
+    kind: Literal["transcript_tick"] = "transcript_tick"
+    agent_id: str = Field(min_length=1)
+    seq: int = Field(ge=1)
+    summary: str = ""
+
+
 FloorEvent = Annotated[
     RunStarted
     | RunFinished
@@ -97,7 +138,10 @@ FloorEvent = Annotated[
     | MessageSent
     | TestRunFinished
     | UsageTick
-    | NoteAdded,
+    | NoteAdded
+    | ApprovalPending
+    | ApprovalResolved
+    | TranscriptTick,
     Field(discriminator="kind"),
 ]
 

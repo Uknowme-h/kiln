@@ -118,13 +118,16 @@ def test_a_valid_reply_validates_into_a_worker_result():
     assert len(gateway.calls) == 1
 
 
-def test_the_call_uses_the_worker_route_and_raised_output_budget():
+def test_the_call_uses_the_worker_route_and_no_per_role_cap():
     gateway = FakeGateway([json.dumps(VALID_RESULT)])
     worker.run(gateway, TASK, SPEC, SUITE)
     call = gateway.calls[0]
     assert call["role"] is Role.WORKER
     assert call["response_format"]["json_schema"]["name"] == "worker_result"
-    assert call["max_tokens"] == 12_288
+    # no per-role hard cap: the call defers to the global safety net in config
+    assert call["max_tokens"] is None
+    # the soft cap lives in the system prompt instead
+    assert "owned paths" in call["messages"][0]["content"]
 
 
 def test_the_task_spec_and_suite_reach_the_prompt_as_untrusted_content():
@@ -152,3 +155,38 @@ def test_two_invalid_replies_are_counted_as_a_failure():
     with pytest.raises(worker.WorkerError):
         worker.run(gateway, TASK, SPEC, SUITE)
     assert len(gateway.calls) == 2
+
+
+# ── per-layer regression feed and dependency references (items 1, 3) ──
+
+
+def test_the_test_state_block_reaches_the_prompt():
+    gateway = FakeGateway([json.dumps(VALID_RESULT)])
+    worker.run(
+        gateway,
+        TASK,
+        SPEC,
+        SUITE,
+        test_state='<test_state>\nknown_green: t0\n</test_state>',
+    )
+    user_message = gateway.calls[0]["messages"][1]["content"]
+    assert "<test_state>" in user_message
+    assert "known_green: t0" in user_message
+
+
+def test_the_test_state_block_separates_regressions_from_expected_red():
+    block = worker.test_state_block(["t0"], 4, ["t1"])
+    assert "1 passing, 4 failing" in block
+    assert "known_green: t0" in block
+    assert "regressions: t1" in block
+    assert "Red is expected" in block
+    # nothing has run yet → no block for the first layer
+    assert worker.test_state_block([], 0, []) == ""
+
+
+def test_dependency_paths_are_offered_as_references_not_contents():
+    block = worker._dependency_paths_block(["models.py"])
+    assert "- models.py" in block
+    assert "read_file" in block
+    assert worker._dependency_paths_block([]) == ""
+    assert worker._dependency_paths_block(None) == ""

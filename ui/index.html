@@ -15,13 +15,14 @@
     <span class="tagline">a multi-agent dev team, at work</span>
     <span class="spacer"></span>
     <span id="conn" class="chip">connecting</span>
+    <span id="approval" class="chip hidden" title="Answer here or in the companion terminal">waiting for approval</span>
     <button id="demo-btn" class="btn" type="button">▶ Run demo</button>
   </header>
 
   <main>
     <section class="panel stage">
       <div class="stage-wrap">
-        <canvas id="floor" width="1000" height="560"></canvas>
+        <canvas id="floor" width="1000" height="640"></canvas>
 
         <!-- The Brief: shown while idle, the client walks in -->
         <div id="brief" class="overlay">
@@ -39,18 +40,35 @@
           </div>
         </div>
 
-        <!-- The Pairing panel: shown while a run waits for the local companion -->
+        <!-- The Pairing panel: listen command → paste code → pick folder -->
         <div id="pairing" class="overlay hidden">
-          <div class="brief-card panel">
-            <h2 class="brief-title">Point the team at your folder</h2>
-            <p class="pair-lead">Run this command on your machine, in the folder where the app should live:</p>
-            <div class="pair-code" id="pair-code">——————</div>
-            <div class="pair-cmd-row">
-              <code id="pair-cmd" class="pair-cmd">kiln-companion connect … --dir .</code>
-              <button id="copy-cmd" class="btn pair-copy" type="button">copy</button>
+          <div class="brief-card panel pair-card">
+            <div id="pair-auth">
+              <h2 class="brief-title">Connect your machine</h2>
+              <p class="pair-lead">Run this anywhere, then paste the code below into the terminal:</p>
+              <div class="pair-cmd-row">
+                <code id="pair-cmd" class="pair-cmd">kiln-companion listen</code>
+                <button id="copy-cmd" class="btn pair-copy" type="button">copy</button>
+              </div>
+              <div class="pair-code" id="pair-code">——————</div>
+              <p class="pair-status" id="pair-status">waiting for your machine…</p>
+              <p class="handoff-note">Needs Python 3.12+. After it pairs, pick the folder here. Your files never leave your machine.</p>
             </div>
-            <p class="pair-status" id="pair-status">waiting for your machine…</p>
-            <p class="handoff-note">Needs Python 3.12+ and Docker Desktop. Your files never leave your machine.</p>
+            <div id="pair-browse" class="hidden">
+              <h2 class="brief-title">Choose the workspace</h2>
+              <p class="pair-lead">The team will build only inside this folder:</p>
+              <div class="browse-path-row">
+                <button id="browse-up" class="btn pair-copy" type="button" title="Go up">↑</button>
+                <code id="browse-path" class="pair-cmd browse-path">…</code>
+              </div>
+              <div id="browse-roots" class="browse-roots"></div>
+              <ul id="browse-list" class="browse-list"></ul>
+              <div class="browse-actions">
+                <button id="browse-use" class="btn brief-go" type="button">Use this folder</button>
+                <button id="browse-create" class="btn" type="button">Create subfolder…</button>
+              </div>
+              <p class="pair-status" id="browse-status"></p>
+            </div>
           </div>
         </div>
 
@@ -61,6 +79,39 @@
             <ul id="handoff-stats" class="handoff-stats"></ul>
             <p class="handoff-note">Files land in your own folder via the local companion.</p>
             <button id="again-btn" class="btn brief-go" type="button">Brief the team again</button>
+          </div>
+        </div>
+
+        <!-- The approval dialog: an agent's command waits on the user. The
+             same question is on the companion terminal; first answer wins. -->
+        <div id="approval-dialog" class="overlay hidden">
+          <div class="brief-card panel approval-card">
+            <h2 class="brief-title" id="approval-title">Approval needed</h2>
+            <p id="approval-agent" class="approval-agent"></p>
+            <pre id="approval-lines" class="approval-lines"></pre>
+            <p id="approval-note" class="approval-note"></p>
+            <div class="approval-actions">
+              <button id="approval-allow" class="btn approval-allow" type="button">Allow once</button>
+              <button id="approval-always" class="btn hidden" type="button">Allow for this run</button>
+              <button id="approval-deny" class="btn approval-deny" type="button">Deny</button>
+            </div>
+            <input id="approval-feedback" class="approval-feedback" type="text" autocomplete="off"
+              placeholder="optional: tell the team why (sent with Deny)" />
+            <p class="handoff-note">You can also answer in the companion terminal — first answer wins.</p>
+          </div>
+        </div>
+
+        <!-- ask_user questionnaire: option chips + free text; dual-channel with terminal -->
+        <div id="question-dialog" class="overlay hidden">
+          <div class="brief-card panel approval-card question-card">
+            <h2 class="brief-title" id="question-title">Questions for you</h2>
+            <p id="question-agent" class="approval-agent"></p>
+            <div id="question-list" class="question-list"></div>
+            <div class="approval-actions">
+              <button id="question-submit" class="btn approval-allow" type="button">Submit answers</button>
+              <button id="question-skip" class="btn" type="button">Skip all</button>
+            </div>
+            <p class="handoff-note">You can also answer in the companion terminal — first answer wins.</p>
           </div>
         </div>
       </div>
@@ -85,12 +136,26 @@
         <div id="ci" class="ci ci-idle">waiting</div>
       </div>
 
-      <div class="panel">
+      <div class="panel log-panel">
         <h2>Event log</h2>
         <ul id="log"></ul>
       </div>
     </aside>
   </main>
+
+  <!-- The agent drawer: click a desk on the floor to read that agent's
+       recorded model and tool I/O. Heavy data, fetched on demand — the
+       SSE floor only ever carries the light ticks. -->
+  <div id="agent-drawer" class="drawer hidden" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <h2 id="drawer-title">Agent</h2>
+        <div id="drawer-sub" class="drawer-sub"></div>
+      </div>
+      <button id="drawer-close" class="btn drawer-close" type="button">✕</button>
+    </div>
+    <div id="drawer-body" class="drawer-body"></div>
+  </div>
 
   <script src="/static/engine.js"></script>
   <script src="/static/characters.js"></script>

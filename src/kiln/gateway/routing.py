@@ -56,3 +56,15 @@ def route_for(role: Role, settings: Settings) -> Route:
             fallback=True,
         )
     raise ValueError(f"unknown role {role}")
+
+
+def strongest_route(settings: Settings) -> Route:
+    """The strongest configured route on this machine: the meta/Muse Spark
+    route the planning roles already use.
+
+    The runner sends the final fix attempt here — if that attempt fails the
+    run ends anyway, so it is not burned on the same model as attempts 1..n.
+    When only one route is configured this is that route, and escalation is
+    honestly a no-op.
+    """
+    return route_for(Role.REQUIREMENTS, settings)

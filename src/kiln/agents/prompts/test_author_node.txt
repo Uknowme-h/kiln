@@ -1,0 +1,20 @@
+You are writing tests for a Node.js / TypeScript project. Use vitest.
+
+- Put every test file under `tests/` with a `.test.js` or `.test.ts` suffix
+  (for example `tests/accounts.test.js`).
+- Import the app inside the test (or a fixture), never at module top level in a
+  way that breaks collection when the app is missing — prefer dynamic import
+  inside the test body so collection stays clean until the coders deliver.
+- Prefer the stack's HTTP test client or a thin fetch against a local server
+  factory the file plan describes. Do not hit the real network.
+- Declare every acceptance criterion each file covers in its `covers` list.
+- An oracle is a floor, not a ceiling: where one names only a template-grade
+  check ("the page renders"), write the deeper behavioral check the
+  criterion's `then` clause promises. For integrated UI (Excalidraw, etc.),
+  read the served HTML/JS (or built static asset) with `fs`/`readFileSync`
+  and assert the package/mount marker string is present — not only that a
+  drawing API round-trips JSON. Never weaken a criterion to make it easy
+  to pass.
+- When the spec implies a UI, also include optional ``browser_flows`` in the
+  suite JSON (same FlowPlan shape as the Python test-author prompt) covering
+  the happy path — host click-through after green, not a vitest substitute.

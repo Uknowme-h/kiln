@@ -11,7 +11,14 @@ Write the suite like this:
 1. Work from the acceptance criteria, one at a time. Each criterion's `oracle`
    names the exact check that proves it — your job is to write that check.
    Declare every criterion each file covers in its `covers` list, and cover
-   every criterion in the spec at least once.
+   every criterion in the spec at least once. An oracle is a floor, not a
+   ceiling: where one names only a template-grade check ("the page renders"),
+   write the deeper behavioral check the criterion's `then` clause promises —
+   what it must contain, post, or return. For "integrated" UI claims, write a
+   test that **reads** the served HTML/JS (or built static asset) from disk
+   and asserts the package/mount marker string is present — not only that an
+   API stores JSON. A weak oracle never licenses a weak test, and you may
+   never weaken a criterion to make it easy to pass.
 2. Write real, runnable pytest against the surface the spec describes: the
    routes, signatures, and behaviors named in the criteria and the file plan,
    using the stack the spec chose. Do not invent extra features, and do not
@@ -28,5 +35,31 @@ Write the suite like this:
    that read like the criterion they prove (for example
    `test_register_with_valid_email_returns_token`).
 
+When the spec implies a user interface (pages, signup/login, primary CTA, or
+an embedded drawing surface), also include a compact ``browser_flows`` object
+in your suite JSON for the host click-through gate — not a substitute for unit
+oracles. Shape:
+
+```
+"browser_flows": {
+  "flows": [
+    {
+      "id": "landing",
+      "name": "Landing loads",
+      "steps": [
+        {"kind": "goto", "url": "/"},
+        {"kind": "expect_visible", "selector": "body"}
+      ]
+    }
+  ]
+}
+```
+
+Cover the happy path named in the criteria (signup, login, primary action,
+integration mount). Step kinds: ``goto``, ``click`` (role+name or CSS),
+``fill``, ``expect_visible``, ``expect_text``, ``expect_url``,
+``expect_console_clean``. Omit ``browser_flows`` for API-only specs.
+
 Your suite will be run in a sandbox with no network and no secrets. If a test
-can only pass with code the spec does not describe, the test is wrong.
+can only pass with code the spec does not describe, the test is wrong. The
+browser gate runs on the host after green — keep flows short and deterministic.

@@ -9,15 +9,37 @@ from kiln.sandbox.parser import parse_junit
 from kiln.schemas.results import TestReport
 
 RESULTS_NAME = "kiln-results.xml"
+VENDOR_DIR = "vendor"
+DEPS_DIR = ".deps"
 
 
 class SandboxError(RuntimeError):
     """The sandbox did not produce a test report."""
 
 
+def _has_vendored_deps(workspace: Path) -> bool:
+    vendor = workspace / VENDOR_DIR
+    if not vendor.is_dir():
+        return False
+    return any(vendor.glob("*.whl")) or any(vendor.glob("*.tar.gz"))
+
+
 def build_docker_args(workspace: Path, settings: Settings, name: str) -> list[str]:
-    """Args that keep generated code off the host network and away from secrets."""
+    """Args that keep generated code off the host network and away from secrets.
+
+    When the companion vendored the app's requirements on the host, the
+    sandbox installs them offline into /workspace/.deps (the root filesystem
+    stays read-only) and puts them on PYTHONPATH before running pytest.
+    """
     mount = workspace.resolve().as_posix()
+    command = f"pytest -q --junitxml=/workspace/{RESULTS_NAME}"
+    pythonpath = "/workspace"
+    if _has_vendored_deps(workspace):
+        pythonpath = f"/workspace/{DEPS_DIR}:/workspace"
+        command = (
+            f"pip install -q --no-index --find-links /workspace/{VENDOR_DIR} "
+            f"--target /workspace/{DEPS_DIR} -r /workspace/requirements.txt && {command}"
+        )
     return [
         "docker",
         "run",
@@ -36,15 +58,15 @@ def build_docker_args(workspace: Path, settings: Settings, name: str) -> list[st
         "--tmpfs",
         "/tmp",
         "-e",
-        "PYTHONPATH=/workspace",
+        f"PYTHONPATH={pythonpath}",
         "-v",
         f"{mount}:/workspace:rw",
         "-w",
         "/workspace",
         settings.sandbox_image,
-        "pytest",
-        "-q",
-        f"--junitxml=/workspace/{RESULTS_NAME}",
+        "sh",
+        "-c",
+        command,
     ]
 
 

@@ -28,6 +28,7 @@ TEST_AUTHOR = AgentRef(id="test_author", role=Role.TEST_AUTHOR, label="Tessa Tes
 WORKER_1 = AgentRef(id="worker-1", role=Role.WORKER, label="Wren Worker")
 WORKER_2 = AgentRef(id="worker-2", role=Role.WORKER, label="Wade Worker")
 FIXER = AgentRef(id="fixer", role=Role.FIXER, label="Felix Fixer")
+REVIEWER = AgentRef(id="reviewer", role=Role.REVIEWER, label="Remy Reviewer")
 REPORTER = AgentRef(id="reporter", role=Role.REPORTER, label="Rosa Reporter")
 
 DEMO_AGENTS: tuple[AgentRef, ...] = (
@@ -37,6 +38,7 @@ DEMO_AGENTS: tuple[AgentRef, ...] = (
     WORKER_1,
     WORKER_2,
     FIXER,
+    REVIEWER,
     REPORTER,
 )
 

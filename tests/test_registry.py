@@ -34,6 +34,16 @@ def test_claim_rejects_expired_codes():
         registry.claim(run.pair_code)
 
 
+class FakeSocket:
+    """Records what the registry would send down the websocket."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_text(self, payload):
+        self.sent.append(payload)
+
+
 def test_claim_allows_reconnect_after_a_disconnect():
     registry = CompanionRegistry()
     run = registry.create_run("a to-do app")
@@ -42,6 +52,29 @@ def test_claim_allows_reconnect_after_a_disconnect():
     registry.detach(run.id)
     assert run.status == "disconnected"
     assert registry.claim(run.pair_code).id == run.id
+
+
+def test_attach_without_workspace_is_paired_until_mark():
+    registry = CompanionRegistry()
+    run = registry.create_run("a to-do app")
+    registry.claim(run.pair_code)
+    registry.attach(run, websocket=None, workspace="")
+    assert run.status == "paired"
+    assert run.workspace == ""
+    registry.mark_workspace(run.id, "/tmp/picked")
+    assert run.status == "ready"
+    assert run.workspace == "/tmp/picked"
+
+
+def test_agent_tools_are_blocked_while_paired():
+    import asyncio
+
+    registry = CompanionRegistry()
+    run = registry.create_run("a to-do app")
+    registry.claim(run.pair_code)
+    registry.attach(run, websocket=FakeSocket(), workspace="")
+    with pytest.raises(CompanionUnavailable, match="workspace not chosen"):
+        asyncio.run(registry.call_tool(run.id, "read_file", {"path": "x"}))
 
 
 def test_call_tool_without_a_companion_is_a_clean_error():
@@ -70,16 +103,6 @@ def test_detach_fails_calls_in_flight():
             await future
 
     asyncio.run(scenario())
-
-
-class FakeSocket:
-    """Records what the registry would send down the websocket."""
-
-    def __init__(self):
-        self.sent = []
-
-    async def send_text(self, payload):
-        self.sent.append(payload)
 
 
 def test_call_tool_sends_the_call_and_resolves_on_the_result():

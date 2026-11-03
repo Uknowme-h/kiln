@@ -1,0 +1,63 @@
+# Kiln UI product skill
+
+Apply whenever the brief mentions a landing page, clean UI, marketing
+surface, or an embedded third-party UI (canvas, editor, map, chart). API-only
+briefs may ignore this file.
+
+## Design.md (scaffold owns this)
+
+Decide once, before feature UI work:
+
+1. One primary action the landing wins (signup, open app, waitlist).
+2. One visual direction with a short name — not "minimal indigo SaaS" and not
+   "clean system UI". Pick a concrete mood (editorial paper, industrial mono,
+   soft garden, sharp terminal, …) and stick to it.
+3. Palette as CSS custom properties (`--bg`, `--ink`, `--accent`, …). Avoid
+   purple-on-white / indigo-default AI themes, warm cream + terracotta serif
+   clichés, and flat single-color pages with no atmosphere.
+4. Typography: one expressive family loaded for display (or a distinctive
+   stack). Do not use Inter, Roboto, Arial, or system-ui alone as the whole
+   type story. Cap weights at bold/semibold; no italic chrome.
+5. Spacing scale and radius tokens (a short closed set). Nested radius:
+   inner ≈ outer − gap when gap is small.
+6. Motion: at least two intentional motions (e.g. hero entrance, CTA hover,
+   section reveal). Prefer transform/opacity; respect prefers-reduced-motion.
+7. Landing composition: brand as a hero-level signal; one headline; one short
+   supporting sentence; one CTA group; one dominant visual plane. No detached
+   promo chips, floating badges, or stat strips in the first viewport.
+
+Workers treat design.md as binding. Never invent a second palette or landing.
+
+## Anti-generic copy and chrome
+
+- Write real product sentences. No placeholder Latin, no "Your headline here".
+- Ban filler: revolutionize, supercharge, cutting edge, effortless, harness
+  the power, world class, take it to the next level.
+- Sentence case for headings and buttons. Errors say what failed and what to
+  do next — no cute exclamation marks.
+
+## Integration done-definition
+
+When the brief says integrated / embedded / with X (Excalidraw, maps, …):
+
+- Done means the **served UI** loads the official package or the approved
+  embed so a user sees X in the browser.
+- API persistence of X's data alone is **not** done.
+- A textarea, JSON dump, empty `#…-host`, or "canvas mounts here" placeholder
+  is a gap — record it in known_gaps or finish the mount before submit_result.
+- If the stack needs a bundler (React island, JSX, TSX), scaffold owns a
+  build script that writes static assets the server serves, and the HTML
+  references that built file. Plan a mount/bundle owner; UI shell tasks
+  depend on it so parallel workers cannot ship a stub host.
+
+## Review checklist (evidence)
+
+Gaps when the brief claimed them: missing design tokens in CSS; system-ui-only
+type for a "clean UI" brief; landing that could belong to any product after
+removing the brand string; integration named in the idea but only stubbed in
+the served page; no build output for an island that must be bundled.
+
+## Attribution
+
+Structure inspired by studying elayadesign/ai-design-skills (landing-page-design,
+MIT). Text and Kiln wiring are original to this project.

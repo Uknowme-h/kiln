@@ -9,6 +9,7 @@ see these files as writable.
 from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_validator
 
 from kiln.paths import safe_relative_path
+from kiln.schemas.browser_flow import FlowPlan
 
 
 class TestFile(BaseModel):
@@ -20,8 +21,19 @@ class TestFile(BaseModel):
     @classmethod
     def inside_the_test_tree(cls, value: str) -> str:
         path = safe_relative_path(value)
-        if not path.startswith("tests/") or not path.endswith(".py"):
-            raise ValueError(f"test files live under tests/ and end in .py: {value}")
+        allowed = (
+            ".py",
+            ".js",
+            ".mjs",
+            ".cjs",
+            ".ts",
+            ".mts",
+            ".tsx",
+        )
+        if not path.startswith("tests/") or not path.endswith(allowed):
+            raise ValueError(
+                f"test files live under tests/ and end in a known test suffix: {value}"
+            )
         return path
 
 
@@ -31,6 +43,8 @@ class TestSuite(BaseModel):
 
     spec_title: str = Field(min_length=1)
     files: list[TestFile] = Field(min_length=1)
+    # Optional host Playwright FlowPlan (written to docs/browser-flows.json).
+    browser_flows: FlowPlan | None = None
 
     @model_validator(mode="after")
     def coverage_is_complete_and_honest(self, info: ValidationInfo) -> "TestSuite":

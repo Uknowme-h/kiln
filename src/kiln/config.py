@@ -22,7 +22,12 @@ class Settings(BaseSettings):
     open_weight_api_key: str = ""
     open_weight_model: str = "meta-models/muse-spark-open-1026"
 
-    max_output_tokens: int = Field(default=4096, gt=0)
+    # Optional ceiling for ONE model call. Default None = omit max_tokens and let
+    # the model use its native default (verified generous: Muse Spark produced
+    # 10k+ completion tokens uncapped, finish=stop). Length is guided by each
+    # role's system prompt (RoleDefinition.output_guidance), not pinned here. Set
+    # a value in .env only if you want a hard runaway guard.
+    max_output_tokens: int | None = Field(default=None, gt=0)
     run_token_ceiling: int = Field(default=200_000, gt=0)
     project_token_ceiling: int = Field(default=2_000_000, gt=0)
 
@@ -40,6 +45,36 @@ class Settings(BaseSettings):
     # Tests and pairing rehearsals turn this off so a companion attach does
     # not fire a real pipeline run.
     pipeline_autostart: bool = True
+
+    # Dev agents are tool-using loops that work on the user's machine; turn
+    # this off to fall back to the one-shot structured-output workers.
+    agentic_devs: bool = True
+    # The requirements analyst may ask the user a few questions first.
+    ask_requirements: bool = True
+    # How many dev agents may work at once. Two keeps path ownership easy to
+    # reason about; the planner still decides which tasks are independent.
+    max_parallel_devs: int = Field(default=2, ge=1, le=8)
+    # Tests run on the user's machine by default; "docker" is the opt-in sandbox.
+    sandbox: str = "host"
+    # Web search provider on the companion: "exa" (hosted, no key) or "duckduckgo".
+    web_search_provider: str = "exa"
+
+    # Persist per-run debug logs under .kiln/runs/{run_id}/ (transcript, usage, events).
+    # Turn off in production / when disk noise is unwanted.
+    debug: bool = False
+    debug_log_dir: str = ".kiln/runs"
+
+    # Coding-quality features (OpenCode-style gaps). Defaults favor quality in dev.
+    inject_product_briefing: bool = True
+    enable_explore_subagent: bool = True
+    explore_max_steps: int = Field(default=8, ge=2, le=20)
+    explore_max_per_task: int = Field(default=2, ge=0, le=8)
+    enable_todo_tool: bool = True
+    todo_probe_every: int = Field(default=5, ge=1, le=30)
+    enable_project_skills: bool = True
+    post_edit_diagnostics: bool = True
+    enable_compaction: bool = False
+    compact_threshold_chars: int = Field(default=100_000, ge=20_000)
 
 
 def load_settings() -> Settings:

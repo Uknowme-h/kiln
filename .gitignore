@@ -17,6 +17,7 @@ build/
 
 evals/results/
 *.log
+.kiln/
 
 .idea/
 .vscode/

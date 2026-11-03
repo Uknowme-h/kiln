@@ -57,3 +57,36 @@ def test_docker_args_block_network_and_do_not_pass_secrets():
     assert "512m" in args
     assert "spark-key" not in args
     assert not any(arg.startswith("--env") for arg in args)
+
+
+def test_plain_workspace_runs_pytest_directly(tmp_path):
+    settings = Settings(_env_file=None, sandbox_image="kiln-sandbox:latest")
+    args = build_docker_args(tmp_path, settings, "kiln-test")
+    env_index = args.index("-e")
+    assert args[env_index + 1] == "PYTHONPATH=/workspace"
+    command = args[-1]
+    assert command.startswith("pytest")
+    assert "pip install" not in command
+
+
+def test_vendored_deps_install_offline_before_pytest(tmp_path):
+    vendor = tmp_path / "vendor"
+    vendor.mkdir()
+    (vendor / "pyjwt-2.10.1-py3-none-any.whl").write_bytes(b"fake")
+    (tmp_path / "requirements.txt").write_text("PyJWT==2.10.1\n", encoding="utf-8")
+    settings = Settings(_env_file=None, sandbox_image="kiln-sandbox:latest")
+    args = build_docker_args(tmp_path, settings, "kiln-test")
+    env_index = args.index("-e")
+    assert args[env_index + 1] == "PYTHONPATH=/workspace/.deps:/workspace"
+    command = args[-1]
+    assert "pip install" in command
+    assert "--no-index" in command  # the sandbox stays offline
+    assert "--find-links /workspace/vendor" in command
+    assert command.endswith("pytest -q --junitxml=/workspace/kiln-results.xml")
+
+
+def test_an_empty_vendor_dir_is_ignored(tmp_path):
+    (tmp_path / "vendor").mkdir()
+    settings = Settings(_env_file=None, sandbox_image="kiln-sandbox:latest")
+    args = build_docker_args(tmp_path, settings, "kiln-test")
+    assert "pip install" not in args[-1]

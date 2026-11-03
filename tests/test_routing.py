@@ -1,6 +1,6 @@
 from kiln.agents.roles import Role
 from kiln.config import Settings, load_settings
-from kiln.gateway.routing import route_for
+from kiln.gateway.routing import route_for, strongest_route
 
 
 def _settings(**overrides) -> Settings:
@@ -26,6 +26,12 @@ def test_planning_roles_use_muse_spark():
     assert "spark-key" not in route.public().values()
 
 
+def test_the_reviewer_is_a_reasoning_role_on_the_spark_route():
+    route = route_for(Role.REVIEWER, _settings())
+    assert route.model == "muse-spark-1.3"
+    assert route.provider == "meta"
+
+
 def test_coding_roles_fall_back_to_muse_spark_until_open_weight_is_configured():
     route = route_for(Role.WORKER, _settings())
     assert route.model == "muse-spark-1.3"
@@ -43,6 +49,17 @@ def test_coding_roles_use_open_weight_when_the_endpoint_is_set():
     assert route.base_url == "https://example.baseten.co/v1"
     assert route.public()["configured"] is True
     assert "open-key" not in str(route.public())
+
+
+def test_the_strongest_route_is_the_meta_spark_route_the_planners_use():
+    settings = _settings(
+        open_weight_base_url="https://example.baseten.co/v1/",
+        open_weight_api_key="open-key",
+    )
+    route = strongest_route(settings)
+    assert route.provider == "meta"
+    assert route.model == "muse-spark-1.3"
+    assert route.fallback is False
 
 
 def test_a_one_line_env_file_is_the_model_key(tmp_path, monkeypatch):

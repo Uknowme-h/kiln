@@ -26,7 +26,9 @@ class FixPatch(BaseModel):
     __test__ = False
 
     diagnosis: str = Field(min_length=1)
-    files: list[PatchFile] = Field(min_length=1)
+    # Empty is allowed for a green-suite no-op (host-env product gate, nothing
+    # to patch). Non-empty patches still must stay inside owned_paths.
+    files: list[PatchFile] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def only_owned_paths(self, info: ValidationInfo) -> "FixPatch":

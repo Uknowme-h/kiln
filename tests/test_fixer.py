@@ -4,6 +4,7 @@ import pytest
 
 from kiln.agents import fixer
 from kiln.agents.roles import Role
+from kiln.config import Settings
 from kiln.gateway.client import Completion
 from kiln.schemas.patch import FixPatch
 from kiln.schemas.results import TestCaseResult, TestReport
@@ -109,3 +110,61 @@ def test_the_fixer_needs_current_files_before_spend():
     with pytest.raises(fixer.FixerError):
         fixer.run(gateway, TASK, REPORT, {})
     assert gateway.calls == []
+
+
+# ── running doc of failed attempts + known gaps (item 2) ──
+
+
+def test_counts_come_first_and_history_and_gaps_reach_the_fixer():
+    gateway = FakeGateway([json.dumps(VALID_PATCH)])
+    fixer.run(
+        gateway,
+        TASK,
+        REPORT,
+        CURRENT_FILES,
+        history=["login returns None; no token issued"],
+        known_gaps=["no logout route"],
+    )
+    user_message = gateway.calls[0]["messages"][1]["content"]
+    assert "1 passed, 1 failed, 0 errors, 0 skipped" in user_message  # aggregates first
+    assert user_message.index("1 passed") < user_message.index("assert 404")
+    assert "<known_gaps>\n- no logout route" in user_message
+    assert "<previous_attempts>" in user_message
+    assert "no token issued" in user_message
+
+
+def test_history_and_gaps_stay_optional():
+    gateway = FakeGateway([json.dumps(VALID_PATCH)])
+    fixer.run(gateway, TASK, REPORT, CURRENT_FILES)
+    user_message = gateway.calls[0]["messages"][1]["content"]
+    assert "<previous_attempts>" not in user_message
+    assert "<known_gaps>" not in user_message
+
+
+# ── the last attempt escalates (item 8) ──
+
+
+class RoutedGateway(FakeGateway):
+    settings = Settings(
+        _env_file=None,
+        model_api_key="spark-key",
+        meta_base_url="https://api.meta.ai/v1",
+        spark_model="muse-spark-1.3",
+        open_weight_base_url="https://example.baseten.co/v1/",
+        open_weight_api_key="open-key",
+    )
+
+
+def test_escalation_moves_the_call_to_the_meta_spark_route():
+    gateway = RoutedGateway([json.dumps(VALID_PATCH)])
+    fixer.run(gateway, TASK, REPORT, CURRENT_FILES, escalate=True)
+    route = gateway.calls[0]["route"]
+    assert route.provider == "meta"
+    assert route.model == "muse-spark-1.3"
+    assert route.fallback is False
+
+
+def test_without_escalation_the_call_leaves_routing_to_the_gateway():
+    gateway = RoutedGateway([json.dumps(VALID_PATCH)])
+    fixer.run(gateway, TASK, REPORT, CURRENT_FILES)
+    assert gateway.calls[0]["route"] is None

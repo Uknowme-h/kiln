@@ -1,0 +1,19 @@
+# Kiln security skill
+
+Apply when the brief has accounts, sessions, auth, or user-submitted data.
+
+## Baseline (must be real, not theater)
+
+1. Passwords: store only salted hashes (bcrypt/argon2/scrypt) — never plaintext
+   or reversible encoding.
+2. Sessions/cookies: HttpOnly; Secure in production configs; SameSite set
+   deliberately (Lax or Strict). Document the choice in discovery/assumptions.
+3. Auth routes: reject empty/weak passwords; do not leak whether an email
+   exists on login failures (generic error).
+4. CSRF: for cookie-session browser apps, protect state-changing POSTs (token
+   or SameSite strategy stated in docs).
+5. CORS: default deny; allow only origins the app needs.
+6. Secrets: from environment / `.env` (gitignored); never hard-code API keys.
+
+A demo auth mode is allowed only when discovery recorded it as an explicit
+labeled demo — then mark it in the UI and README.

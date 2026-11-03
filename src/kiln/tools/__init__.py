@@ -1,4 +1,4 @@
-"""File and shell tool schemas. Execution stays inside the Docker sandbox."""
+"""Tool schemas and the catalogue the agents draw from."""
 
 from kiln.tools.schemas import ReadFile, ShellCommand, WriteFile
 

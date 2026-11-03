@@ -1,8 +1,10 @@
 """Live relay smoke: real server, real companion process, real tool calls.
 
 Boots uvicorn on a scratch port, creates a run, points the real
-`kiln-companion` CLI at a temp workspace, and drives file tools through the
-relay. No model calls, no Docker needed. Run from the repo root:
+`kiln-companion connect CODE --dir` shortcut at a temp workspace, and drives
+file tools through the relay. (The UI path is `listen` + folder pick; connect
+keeps this smoke hermetic.) No model calls, no Docker needed. Run from the
+repo root:
 
     .venv\\Scripts\\python scripts/smoke_companion.py
 """
@@ -51,7 +53,13 @@ def main() -> None:
     from kiln.config import Settings
     from kiln.main import create_app
 
-    settings = Settings(_env_file=None, model_api_key="smoke", project_token_ceiling=5000)
+    settings = Settings(
+        _env_file=None,
+        model_api_key="smoke",
+        project_token_ceiling=5000,
+        pipeline_autostart=False,  # probe tools only; no model loop
+        sandbox="host",
+    )
     config = uvicorn.Config(
         create_app(settings), host="127.0.0.1", port=PORT, log_level="warning"
     )

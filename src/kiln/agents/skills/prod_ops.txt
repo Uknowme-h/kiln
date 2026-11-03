@@ -1,0 +1,19 @@
+# Kiln prod_ops skill
+
+Apply when the app will be run by a human after the Kiln run (almost every
+shippable brief with a server or UI). API-only throwaways may ignore this.
+
+## Ship checklist (scaffold or a dedicated ops task owns these)
+
+1. `.env.example` listing every runtime config key with dummy values — never
+   commit real secrets, tokens, or passwords.
+2. A health (or ready) route that returns 200 when the process can serve.
+3. Persistence: if a database is used, document the schema and how to create
+   or migrate it (SQL file, migrate script, or "creates on first boot").
+4. README runbook: install deps, set env, start command, run tests — copy-paste
+   commands for the chosen stack.
+5. Pin direct dependencies in the lockfile or requirements; do not leave the
+   app relying on undeclared global packages.
+
+Workers must not invent a second ops story mid-fan-out. Prefer one owner for
+`.env.example` and the health route (usually the scaffold).

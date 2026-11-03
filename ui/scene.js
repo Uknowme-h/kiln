@@ -18,17 +18,45 @@ const KilnScene = (() => {
   const SCALE = 3;
   const WALL_H = 49; // top wall band + baseboard
 
+  // Build floor: workers get their own desk pool (never fixer/reviewer seats).
+  // Desk sprites are 144×84 → centers need ≥200px horizontal / ≥165px vertical.
+  // Row y=370 / y=545; columns grow rightward for worker-5+.
+  const WORKER_ONLY_SEATS = [
+    { x: 220, y: 370 }, // worker-1
+    { x: 480, y: 370 }, // worker-2
+    { x: 650, y: 370 }, // worker-3
+    { x: 650, y: 545 }, // worker-4
+  ];
   const seats = {
     requirements: { x: 500, y: 150 },
     planner: { x: 660, y: 150 },
     test_author: { x: 830, y: 150 },
-    "worker-1": { x: 180, y: 355 },
-    "worker-2": { x: 360, y: 355 },
-    fixer: { x: 540, y: 355 },
-    reporter: { x: 790, y: 360 },
+    "worker-1": WORKER_ONLY_SEATS[0],
+    "worker-2": WORKER_ONLY_SEATS[1],
+    "worker-3": WORKER_ONLY_SEATS[2],
+    "worker-4": WORKER_ONLY_SEATS[3],
+    fixer: { x: 220, y: 545 },
+    reviewer: { x: 480, y: 545 },
+    reporter: { x: 820, y: 360 },
   };
+
+  function workerSeat(n) {
+    const i = Math.max(1, n) - 1;
+    if (i < WORKER_ONLY_SEATS.length) return { ...WORKER_ONLY_SEATS[i] };
+    const overflow = i - WORKER_ONLY_SEATS.length;
+    const col = 3 + Math.floor(overflow / 2);
+    const row = overflow % 2;
+    return { x: 220 + col * 230, y: row === 0 ? 370 : 545 };
+  }
+
+  function seatFor(id) {
+    if (seats[id]) return { ...seats[id] };
+    const m = /^worker-(\d+)$/.exec(id);
+    if (m) return workerSeat(parseInt(m[1], 10));
+    return { x: 400, y: 400 };
+  }
   const RACK_POS = { x: 905, y: 44 };
-  const BOARD_POS = { x: 44, y: 246 };
+  const BOARD_POS = { x: 20, y: 250 };
 
   // Walking routes, each one a real office action:
   //   kickoff    — analyst + PM meet at the conference table when a run starts
@@ -46,20 +74,41 @@ const KilnScene = (() => {
   };
   const STATION_LEGS = {
     whiteboard: () => [{ x: 90, y: 96 }, { x: 90, y: 156 }],
-    printer: (home) => [{ x: home.x, y: 300 }, { x: 865, y: 300 }, { x: 865, y: 440 }],
+    printer: (home) => [{ x: home.x, y: 280 }, { x: 865, y: 280 }, { x: 865, y: 450 }],
   };
   // The fixer stands in the gap beside the host's desk, reached via the
   // corridor above the build-floor desks.
   function helpRoute(home, host) {
-    const gx = host.home.x + 90;
-    return [{ x: home.x, y: 250 }, { x: gx, y: 250 }, { x: gx, y: 335 }];
+    const gx = host.home.x + 95;
+    const aisle = Math.min(home.y, host.home.y) - 75;
+    return [{ x: home.x, y: aisle }, { x: gx, y: aisle }, { x: gx, y: host.home.y }];
   }
 
+  const WORKER_NOTE_COLORS = [
+    T.accent.coral,
+    T.accent.mint,
+    T.accent.sky,
+    T.accent.lemon,
+    T.accent.lilac,
+    T.accent.peach,
+  ];
   const NOTE_COLORS = {
-    "worker-1": T.accent.coral,
-    "worker-2": T.accent.mint,
+    "worker-1": WORKER_NOTE_COLORS[0],
+    "worker-2": WORKER_NOTE_COLORS[1],
+    "worker-3": WORKER_NOTE_COLORS[2],
+    "worker-4": WORKER_NOTE_COLORS[3],
     fixer: T.accent.lemon,
   };
+
+  function noteColorFor(id) {
+    if (NOTE_COLORS[id]) return NOTE_COLORS[id];
+    const m = /^worker-(\d+)$/.exec(id);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      return WORKER_NOTE_COLORS[(n - 1) % WORKER_NOTE_COLORS.length];
+    }
+    return T.accent.lemon;
+  }
 
   function create(canvas) {
     const ctx = canvas.getContext("2d");
@@ -104,7 +153,9 @@ const KilnScene = (() => {
     let clockCache = { key: -1, canvas: null };
 
     function addAgent(ref) {
-      const seat = seats[ref.id] || { x: 400, y: 400 };
+      if (!ref || !ref.id) return;
+      if (agents.has(ref.id)) return; // keep existing seat / pose
+      const seat = seatFor(ref.id);
       agents.set(ref.id, {
         ...ref, x: seat.x, y: seat.y, home: { ...seat },
         status: "idle", detail: "", task: null,
@@ -112,7 +163,26 @@ const KilnScene = (() => {
         route: [], outRoute: null,
       });
     }
+    function ensureAgent(ref) {
+      if (!ref || !ref.id) return null;
+      if (!agents.has(ref.id)) addAgent(ref);
+      return agents.get(ref.id);
+    }
     function agent(id) { return agents.get(id); }
+
+    // Hit test for clicks: the walking body (chars.W/H at SCALE, anchored at
+    // the feet) plus the desk that stays at home, so a walking fixer is still
+    // clickable at their desk.
+    function agentAt(x, y) {
+      const bw = (chars.W * SCALE) / 2 + 6, bh = chars.H * SCALE + 10;
+      let hit = null;
+      for (const a of agents.values()) {
+        const body = Math.abs(x - a.x) <= bw && y <= a.y + 6 && y >= a.y - bh;
+        const desk = Math.abs(x - a.home.x) <= 78 && y >= a.home.y - 40 && y <= a.home.y + 56;
+        if (body || desk) hit = a; // later (lower) agents win, matching draw order
+      }
+      return hit ? hit.id : null;
+    }
 
     function setRoute(a, points) {
       a.route = points.map((p) => ({ ...p }));
@@ -133,7 +203,9 @@ const KilnScene = (() => {
 
     const api = {
       addAgent,
+      ensureAgent,
       agent,
+      agentAt,
       setStatus(id, status, detail) {
         const a = agents.get(id);
         if (!a) return;
@@ -143,7 +215,7 @@ const KilnScene = (() => {
       },
       setTask(id, title) { const a = agents.get(id); if (a) { a.task = title; a.hop = 1; } },
       pinTask(id, agentId) {
-        if (notes.length < 8) notes.push({ color: NOTE_COLORS[agentId] || T.accent.sky, done: false });
+        if (notes.length < 8) notes.push({ color: noteColorFor(agentId), done: false });
       },
       message(fromId, toId) {
         const f = agents.get(fromId), t = agents.get(toId);
@@ -170,8 +242,9 @@ const KilnScene = (() => {
       collectCard(id) {
         const a = agents.get(id);
         if (!a) return;
-        const stand = { x: 175, y: 318 };
-        const to = [{ x: a.home.x, y: 300 }, { x: stand.x, y: 300 }, { ...stand }];
+        const stand = { x: 175, y: 300 };
+        const aisle = Math.min(a.home.y - 75, 280);
+        const to = [{ x: a.home.x, y: aisle }, { x: stand.x, y: aisle }, { ...stand }];
         const back = to.slice(0, -1).reverse().map((p) => ({ ...p }));
         a.route = [...to, ...back, { ...a.home }];
       },
@@ -259,12 +332,12 @@ const KilnScene = (() => {
       ctx.globalAlpha = 0.12; ctx.fillStyle = T.accent.sky; // test lab
       ctx.fillRect(760, WALL_H, 240, 176);
       ctx.globalAlpha = 0.15; ctx.fillStyle = T.world.woodLight; // docs corner
-      ctx.fillRect(708, 240, 292, 185);
+      ctx.fillRect(708, 240, 292, 220);
       ctx.globalAlpha = 1;
-      // break nook: warm wood checker
+      // break nook: warm wood checker, tucked into the bottom-right
       let r = 0;
-      for (let y = 425; y < canvas.height; y += T.tile, r++)
-        for (let x = 500; x < canvas.width; x += T.tile) {
+      for (let y = 560; y < canvas.height; y += T.tile, r++)
+        for (let x = 730; x < canvas.width; x += T.tile) {
           ctx.fillStyle = (Math.floor(x / T.tile) + r) % 2 ? T.world.woodLight : T.world.woodDark;
           ctx.fillRect(x, y, T.tile, T.tile);
         }
@@ -276,11 +349,12 @@ const KilnScene = (() => {
       ctx.fillStyle = "#A8CDB4";
       ctx.fillRect(160, 92, 190, 4); ctx.fillRect(160, 198, 190, 4);
       ctx.fillRect(160, 92, 4, 110); ctx.fillRect(346, 92, 4, 110);
-      // build floor rug
-      ctx.fillStyle = T.world.rug; ctx.fillRect(40, 250, 600, 175);
+      // build floor rug — extended down so the bullpen uses the bottom space
+      const rugX = 16, rugY = 248, rugW = 700, rugH = 350;
+      ctx.fillStyle = T.world.rug; ctx.fillRect(rugX, rugY, rugW, rugH);
       ctx.fillStyle = T.world.rugEdge;
-      ctx.fillRect(40, 250, 600, 6); ctx.fillRect(40, 419, 600, 6);
-      ctx.fillRect(40, 250, 6, 175); ctx.fillRect(634, 250, 6, 175);
+      ctx.fillRect(rugX, rugY, rugW, 6); ctx.fillRect(rugX, rugY + rugH - 6, rugW, 6);
+      ctx.fillRect(rugX, rugY, 6, rugH); ctx.fillRect(rugX + rugW - 6, rugY, 6, rugH);
     }
 
     // Room dividers: wall segments with door gaps, plus cubicle partitions.
@@ -306,7 +380,7 @@ const KilnScene = (() => {
       // cubicle partitions between the plan desks and the test desk
       v(578, 118, 67); v(738, 118, 67);
       // docs divider with a doorway gap
-      v(700, 260, 70); v(700, 370, 45);
+      v(700, 260, 70); v(700, 390, 70);
     }
 
     function decals() {
@@ -314,9 +388,9 @@ const KilnScene = (() => {
       ctx.font = "13px 'Pixelify Sans', monospace";
       ctx.textAlign = "center";
       ctx.fillStyle = T.ink[500];
-      ctx.fillText("build floor", 380, 266);
-      ctx.fillText("docs", 935, 505);
-      ctx.fillText("break nook", 695, 548);
+      ctx.fillText("build floor", 360, 266);
+      ctx.fillText("docs", 935, 520);
+      ctx.fillText("break nook", 860, 575);
       ctx.globalAlpha = 1;
     }
 
@@ -341,7 +415,7 @@ const KilnScene = (() => {
       });
       // bins tucked against walls
       ctx.drawImage(art.trash, 20, 240, 20, 28);
-      ctx.drawImage(art.trash, 975, 380, 20, 28);
+      ctx.drawImage(art.trash, 975, 400, 20, 28);
       // test lab
       ctx.drawImage(ci === "green" ? art.rackGreen : ci === "red" ? art.rackRed : art.rackIdle,
         RACK_POS.x, RACK_POS.y, 80, 112);
@@ -352,15 +426,15 @@ const KilnScene = (() => {
       // docs corner
       ctx.drawImage(art.shelf, 887, 180, 96, 128);
       ctx.drawImage(art.cabinet, 899, 316, 72, 96);
-      ctx.drawImage(art.printer, 905, 420, 88, 60);
-      // break nook, grouped on the wood floor
-      ctx.drawImage(art.cooler, 525, 440, 40, 80);
-      ctx.drawImage(art.couch, 580, 440, 144, 72);
-      ctx.drawImage(art.bigPlant, 740, 432, 48, 80);
-      ctx.drawImage(art.coffee, 800, 445, 96, 52);
+      ctx.drawImage(art.printer, 905, 430, 88, 60);
+      // break nook, grouped on the wood floor (bottom-right, clear of desks)
+      ctx.drawImage(art.cooler, 750, 560, 40, 80);
+      ctx.drawImage(art.couch, 810, 562, 144, 72);
+      ctx.drawImage(art.bigPlant, 960, 555, 40, 70);
+      ctx.drawImage(art.coffee, 900, 500, 88, 48);
       // greenery
       ctx.drawImage(art.plant, 406, 56, 40, 52);
-      ctx.drawImage(art.plant, 20, 478, 40, 52);
+      ctx.drawImage(art.plant, 20, 585, 40, 52);
     }
 
     function zoneSigns() {
@@ -402,12 +476,12 @@ const KilnScene = (() => {
           : f.idle;
 
       const w = chars.W * SCALE, h = chars.H * SCALE;
-      // body at the current position
+      // Body first, then desk over the legs — reads as seated behind the desk,
+      // not standing on top of it.
       const bodyX = Math.round(a.x - w / 2);
       const bodyY = Math.round(a.y - h + bobY + hopY);
       ctx.drawImage(img, bodyX, bodyY, w, h);
 
-      // the desk stays home and glows only while its owner is seated and working
       const atHome = a.x === a.home.x && a.y === a.home.y && !walking;
       const on = a.status === "working" && atHome;
       const deskImg = on ? art.deskOn : art.deskIdle;

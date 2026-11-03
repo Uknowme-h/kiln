@@ -145,13 +145,77 @@ is never faked. The trial instruction line worth stealing verbatim:
    explicitly, and separates observations from inferences — extending the existing
    "never present skipped as green" rule into the full evidence discipline.
 
+## Plan mode, revisited from the OpenCode source (Nov 1)
+
+After reading OpenCode V2's plan-mode implementation (`packages/core/src/plugin/plan.ts`,
+`session/runner/llm.ts`, the TUI agent cycle), we borrowed four things deliberately.
+OpenCode's plan agent is a *persona of one interactive session* gated by a permission
+ruleset (`edit * deny` + `edit <planDir>/* allow`); Kiln's planner is a *pipeline stage*
+whose output coordinates parallel workers. The problems differ, so we took the
+mechanisms, not the persona model:
+
+1. **Permission-backed read-only planner.** The planner now runs a real tool loop
+   (read/list/glob/grep + `ask_user`) with a single allowed write, `docs/plan.md`,
+   enforced by the companion's leases + permission ruleset — the carve-out mirrors
+   OpenCode's plan-directory exception. The prompt advertises the scope; the
+   permission engine is the teeth. (`agents/planner.py` `run_agentic`,
+   `agents/definitions.py`, `kiln/permissions.py`.)
+
+2. **A durable contract.** The validated `TaskGraph.contract` is rendered to
+   `docs/contract.md` by the orchestrator, so the whole team (and the user, via the
+   transcript drawer) can re-read exactly what the workers coded against. It is also
+   passed to the fixer as a stable reference. (`agents/planner.py`
+   `render_plan_markdown`, `graph/orchestrator.py`, `agents/fixer.py`.)
+
+3. **An approve-to-proceed beat.** After the plan validates, the pipeline parks until
+   the user approves it in the companion terminal (`confirm_plan`, permission action
+   `plan`, always `ask`, never remembered). A refusal carries feedback that sends the
+   planner back once; a second refusal ends the run not-green. This is OpenCode's
+   "you stay in plan mode until the user switches" consent moment, adapted to an
+   unattended team's terminal. (`companion/executor.py`, `graph/orchestrator.py`.)
+
+4. **Contract re-assertion on drift.** OpenCode re-injects the plan-mode reminder on
+   every request if compaction strips it. Kiln re-attaches the worker reminder on
+   doom-loop refusal and step-cap handoff; optional compaction (default off) also
+   re-injects reminder + todos (`agents/loop.py`, `agents/worker.py`).
+
+Not taken: the shared-session persona (Kiln's agents are concurrent and stateless),
+unrestricted shell in plan mode (our approval model is stricter), and prompt-only
+enforcement anywhere.
+
+## Clarify loop (explore → ask → plan → approve)
+
+Aligned with Claude Code / OpenCode plan clarify (Nov 2):
+
+1. **Requirements** researches, invents `ask_user` questions only for real
+   ambiguities (no fixed Auth/Persistence/UI/Stack quiz), writes free-form
+   `docs/discovery.md`, then emits the Spec.
+2. **Planner** explores the workspace, may ask one planning trade-off, writes
+   `docs/plan.md` + TaskGraph; orchestrator writes `docs/contract.md`.
+3. **`confirm_plan`** remains the approve-to-proceed beat.
+
+Removed: the orchestrator `_readiness_gate` that re-asked missing checklist
+headings with hard-coded options.
+
+## Coding-quality lands (OpenCode-inspired, Kiln-shaped)
+
+- **F0 briefing:** workers/fixers get `<design>` / `<discovery>` digests; fixers get `<spec_excerpt>` (`agents/briefing.py`).
+- **F1 explore:** `spawn_explore` read-only child loop, depth 1, quota 2 (`agents/explore.py`).
+- **F3 todos:** `todo_write` / `todo_read` + goal probe every N steps (`agents/todos.py`).
+- **F2 diagnostics:** richer post-edit checks + on-demand `diagnostics` tool (companion).
+- **F4 project skills:** `.kiln/skills` → `project:<stem>`; optional `.kiln/agents/*.md` → `project:agent-<stem>` (skill text only).
+- **F5 compaction:** opt-in, thrash-guarded (`enable_compaction`, default false).
+
 ## Deliberately not taken (scope guards)
 
 - OpenCode's Effect/Layer service architecture and MCP — Kiln stays plain Python +
   LangGraph with thin swappable nodes.
-- Child-session resumability — Kiln's per-run workspace and event log are enough
-  for a demo-scale system.
-- OpenCode's `ask` permission effect — Kiln runs unattended; allow/deny only.
+- Child-session resumability / background subagents / git worktrees — sync explore
+  only; path leases remain the parallel write model.
+- OpenCode's full TUI permission UX — Kiln asks in the companion terminal
+  (`y` / `a` / `n` / `n <reason>`), not in a rich client. The `ask` effect is
+  used; unattended runs deny anything that would ask.
+- Persistent IDE language servers — stack smoke/diagnostics instead of LSP RPC.
 - Per-provider prompt files beyond Meta — one family is in scope.
 - REA's guided-prompt server and completion capability — our prompt templates are
   internal, not a protocol surface.
