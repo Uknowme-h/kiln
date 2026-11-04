@@ -63,6 +63,7 @@ def test_roster_endpoint_lists_the_seated_agents():
         "fixer",
         "reviewer",
         "reporter",
+        "supervisor",
     }
 
 

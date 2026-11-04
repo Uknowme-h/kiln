@@ -288,6 +288,8 @@ async def run_agentic(
     discovery: str | None = None,
     plan_memo: str | None = None,
     file_index: list[str] | None = None,
+    team_notes: str = "",
+    on_escalate=None,
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
@@ -303,11 +305,18 @@ async def run_agentic(
     `current_files` (inline bodies) is still honoured when a caller passes it.
     """
     definition = definition_for(Role.FIXER)
+    settings = gateway.settings
+    tool_names = _coding_tool_names(definition.tools, settings)
+    if on_escalate is None:
+        tool_names = tuple(name for name in tool_names if name != "escalate")
     system = system_prompt_for(
         Role.FIXER,
         **_skill_kwargs(
             ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills
         ),
+        # the fixer has the skill tool: an on-demand index, not embedded packs
+        skill_mode="index" if "skill" in tool_names else "embed",
+        required_skills=tuple(task.required_skills),
     )
     if escalate:
         system += (
@@ -354,6 +363,12 @@ async def run_agentic(
         user += "\n" + _current_files_block(current_files)
     elif file_index:
         user += "\n" + _file_index_block(file_index)
+    if team_notes:
+        user += (
+            "\n\n<team_notes>\nWhat the developers who built these files reported "
+            "(decisions, files, known gaps):\n"
+            f"{team_notes}\n</team_notes>"
+        )
     if known_gaps:
         user += (
             "\n\n<known_gaps>\n"
@@ -387,8 +402,6 @@ async def run_agentic(
             )
         return None
 
-    settings = gateway.settings
-    tool_names = _coding_tool_names(definition.tools, settings)
     tools = specs_for(tool_names, overrides={"submit_result": FIX_SUBMIT})
     wrapped, todo_store, _quota = wrap_coding_tools(
         call_tool,
@@ -396,6 +409,7 @@ async def run_agentic(
         settings=settings,
         agent_id=agent_id or "fixer",
         transcript=transcript,
+        on_escalate=on_escalate,
     )
     reminder = (
         f"owned paths: {', '.join(task.owned_paths)}"

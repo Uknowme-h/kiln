@@ -167,26 +167,54 @@ def _run_with_scaffold_error(monkeypatch, error):
     return green, registry, events
 
 
-def test_a_failed_scaffold_stops_the_run_before_any_build(monkeypatch):
+def _skeleton_claims(registry):
+    return [
+        inp["owned_paths"] for tool, inp in registry.calls
+        if tool == "claim_scope" and "package.json" in inp.get("owned_paths", [])
+    ]
+
+
+def test_a_failed_scaffold_falls_back_to_a_hand_built_skeleton(monkeypatch):
+    """A failed official scaffold no longer leaves the team building on
+    nothing, and no longer ends the run: the root's first task is leased the
+    essential files and told to build the skeleton by hand."""
     green, registry, events = _run_with_scaffold_error(
         monkeypatch,
         RuntimeError('ExecutionError: Could not create a project called "Notescalidraw"'),
     )
-    assert green is False
-    tools = [tool for tool, _ in registry.calls]
-    assert "claim_scope" in tools  # the plan ran
-    assert not any(kind == "task_assigned" for kind in (e.kind for e in events.events))
-    assert "run_tests" not in tools
-    failure = [e for e in events.events if e.kind == "message_sent" and "run failed" in e.summary]
-    assert failure and "during scaffolding" in failure[0].summary
-    assert "Notescalidraw" in failure[0].summary
+    claims = _skeleton_claims(registry)
+    assert claims and {"package.json", "next.config.ts", "tsconfig.json"} <= set(claims[0])
+    notice = [e for e in events.events if e.kind == "message_sent" and "by hand" in e.summary]
+    assert notice and "Notescalidraw" in notice[0].summary
+    assert "run_tests" in [tool for tool, _ in registry.calls]  # the build went on
+    assert green is True
 
 
-def test_a_declined_scaffold_stops_the_run_with_guidance(monkeypatch):
-    green, _, events = _run_with_scaffold_error(monkeypatch, ToolDenied("user said no"))
-    assert green is False
-    failure = [e for e in events.events if e.kind == "message_sent" and "run failed" in e.summary]
-    assert "declined" in failure[0].summary
+def test_a_declined_scaffold_also_falls_back(monkeypatch):
+    green, registry, events = _run_with_scaffold_error(monkeypatch, ToolDenied("user said no"))
+    assert _skeleton_claims(registry)
+    notice = [e for e in events.events if e.kind == "message_sent" and "by hand" in e.summary]
+    assert "declined" in notice[0].summary
+
+
+def test_the_skeleton_fallback_never_claims_a_file_another_task_owns(monkeypatch):
+    from kiln.schemas.tasks import TaskGraph
+
+    graph = TaskGraph.model_validate({
+        "spec_title": "N",
+        "tasks": [
+            {"id": "s", "title": "S", "description": "d", "kind": "scaffold", "owned_paths": ["app/layout.tsx"]},
+            {"id": "f", "title": "F", "description": "d", "owned_paths": ["package.json", "app/page.tsx"],
+             "depends_on": ["s"]},
+        ],
+    })
+    orch = Orchestrator(FakeGateway(), FakeRegistry([]), Collector().send, 1, TEST_SETTINGS)
+    asyncio.run(orch._skeleton_fallback(graph, ".", "nextjs", "boom"))
+    scaffold = graph.tasks[0]
+    assert "package.json" not in scaffold.owned_paths  # f owns it
+    assert "next.config.ts" in scaffold.owned_paths
+    assert "nextjs" in scaffold.required_skills
+    assert "SKELETON FALLBACK" in scaffold.description
 
 
 def test_an_already_scaffolded_root_is_still_reused(monkeypatch):
@@ -264,12 +292,16 @@ def test_a_split_node_product_installs_the_runner_at_the_workspace_root(monkeypa
     registry = FakeRegistry([])
     orch = Orchestrator(FakeGateway(), registry, Collector().send, 1, TEST_SETTINGS)
     orch.stack_id = "node"
-    asyncio.run(orch._install_all_roots("run-1", spec))
+    asyncio.run(orch._install_remaining_roots("run-1", spec))
     roots = [inp.get("root") for tool, inp in registry.calls if tool == "install_deps"]
     assert roots == ["frontend", "backend", "."]
+    asyncio.run(orch._install_remaining_roots("run-1", spec))  # each root installs once
+    assert len([1 for tool, _ in registry.calls if tool == "install_deps"]) == 3
 
 
-def test_a_failed_suite_root_install_is_fatal_not_advisory(monkeypatch):
+def test_a_failed_suite_root_install_is_recorded_not_fatal(monkeypatch):
+    """No single failure ends the build: the suite's self-heal reinstalls once
+    and the final run gives the honest verdict."""
     spec = _node_spec([{"path": ".", "role": "fullstack", "framework": "nextjs"}])
 
     class FailingInstall(FakeRegistry):
@@ -280,8 +312,9 @@ def test_a_failed_suite_root_install_is_fatal_not_advisory(monkeypatch):
 
     orch = Orchestrator(FakeGateway(), FailingInstall([]), Collector().send, 1, TEST_SETTINGS)
     orch.stack_id = "node"
-    with pytest.raises(orchestrator.LoopError, match="npm ERR! network"):
-        asyncio.run(orch._install_all_roots("run-1", spec))
+    asyncio.run(orch._install_remaining_roots("run-1", spec))
+    assert orch._root_state == {".": "failed"}
+    assert any("npm ERR! network" in note for note in orch._run_notes)
 
 
 # ── 4. compaction never orphans a tool result; the gateway checks pairing ────

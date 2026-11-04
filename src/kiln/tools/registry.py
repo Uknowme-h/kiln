@@ -80,10 +80,51 @@ TOOLS: dict[str, ToolSpec] = {
             s.ListPeers,
         ),
         ToolSpec(
+            "notify_peer",
+            "Tell your teammate developer something they must know now: a shared "
+            "seam you changed (route, export, element id, env var), a dependency "
+            "you added, or a change you need in a file they own. Set reply_to to a "
+            "question id to answer their question. Short and concrete.",
+            s.NotifyPeer,
+        ),
+        ToolSpec(
+            "ask_peer",
+            "Ask your teammate something only they can answer (how their side "
+            "behaves, a detail the contract leaves open). Check the contract, the "
+            "shared types and their files first. wait=false keeps you working and "
+            "the answer arrives as a message; wait=true pauses until they answer.",
+            s.AskPeer,
+        ),
+        ToolSpec(
+            "escalate",
+            "Bring a problem to the tech lead when you cannot settle it yourself: a "
+            "product decision nobody recorded, a machine/toolchain problem in the way, "
+            "a task that is too big or missing a dependency, or anything else blocking "
+            "you. Include the exact error and what you tried. The lead may answer, ask "
+            "the user, change the plan or arrange an install.",
+            s.Escalate,
+        ),
+        ToolSpec(
+            "propose_contract_change",
+            "Change or add one api route of the shared contract when it is wrong or "
+            "incomplete — never just code around it. Additions are accepted; removing "
+            "a field or changing a status the tests rely on is refused. On accept the "
+            "contract docs and shared types are regenerated and your teammate is told.",
+            s.ProposeContractChange,
+        ),
+        ToolSpec(
+            "request_files",
+            "Ask to edit files outside your task's owned paths (e.g. a shared router "
+            "or config). Free files are added to your lease at once and their owner "
+            "is told. A file your teammate is working on is queued: keep working on "
+            "your other files and you will be told when it is yours, or set wait=true "
+            "to pause until it is released when nothing else can move.",
+            s.RequestFiles,
+        ),
+        ToolSpec(
             "skill",
-            "Load a Kiln skill by name when you need its rules "
-            "(ui_product, prod_ops, security, or project:<stem> from "
-            ".kiln/skills/). Returns the full skill text.",
+            "Load a Kiln skill by name when your work reaches its area (the skill "
+            "index in your instructions lists them). Returns the full skill text.",
             s.Skill,
         ),
         ToolSpec(

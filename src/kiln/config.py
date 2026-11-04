@@ -51,12 +51,34 @@ class Settings(BaseSettings):
     agentic_devs: bool = True
     # The requirements analyst may ask the user a few questions first.
     ask_requirements: bool = True
-    # How many dev agents may work at once. Two keeps path ownership easy to
-    # reason about; the planner still decides which tasks are independent.
+    # Developers working in parallel. The team is two developers (Dev A and
+    # Dev B) who split the plan; 1 runs a single developer. Values above 2 are
+    # accepted for older configs and mean two.
     max_parallel_devs: int = Field(default=2, ge=1, le=8)
-    # A task whose worker ends with nothing delivered gets this many fresh
-    # attempts (told why the last one failed) before the run ends.
+    # A task whose developer ends with nothing delivered gets this many fresh
+    # attempts in the same lane (told why the last one failed).
     worker_retries: int = Field(default=1, ge=0, le=3)
+    # After those, the other developer gets one attempt before the task is
+    # marked failed and the build carries on without it.
+    worker_failover: bool = True
+    # Longest a developer stays paused waiting for a shared file its teammate
+    # holds (request_files wait=true). A paused loop spends no tokens.
+    file_wait_seconds: int = Field(default=600, ge=10, le=3600)
+    # Longest a developer stays paused waiting for its teammate's answer
+    # (ask_peer wait=true). Also ends when the teammate's task ends.
+    peer_answer_wait_seconds: int = Field(default=300, ge=10, le=3600)
+    # The tech lead: an event-driven supervisor that answers escalations, asks
+    # the user product questions, amends the plan's structure and arranges
+    # installs. Each decision is one model call; the cap bounds the cost.
+    # While no companion is attached, agents' tool calls are held (no model
+    # calls) for up to this long before they fail; a restart reattaches.
+    companion_outage_wait_seconds: int = Field(default=900, ge=0, le=7200)
+    enable_supervisor: bool = True
+    supervisor_max_calls: int = Field(default=12, ge=0, le=100)
+    # How long an escalating developer stays paused for the decision (no tokens).
+    supervisor_wait_seconds: int = Field(default=600, ge=10, le=3600)
+    # How long the lead waits for the user before taking its recommended option.
+    supervisor_user_timeout_seconds: int = Field(default=300, ge=30, le=3540)
     # Run one fixer per workspace root when the failing tests split cleanly by
     # root. Failures that span roots (contract mismatches) keep a single fixer.
     parallel_fixers: bool = True

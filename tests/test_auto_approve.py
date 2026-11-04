@@ -27,7 +27,7 @@ class _CountingPrompt(ApprovalPrompt):
         self.ask_calls += 1
         return super().ask(request)  # non-interactive, no remote -> denied
 
-    def ask_questions(self, agent_label, questions):
+    def ask_questions(self, agent_label, questions, timeout=None):
         self.question_calls += 1
         return super().ask_questions(agent_label, questions)
 

@@ -80,6 +80,10 @@
           <div class="brief-card panel">
             <h2 id="handoff-title" class="brief-title">Run finished</h2>
             <ul id="handoff-stats" class="handoff-stats"></ul>
+            <div id="handoff-notes-wrap" class="handoff-notes-wrap hidden">
+              <h3 class="handoff-sub">What happened along the way</h3>
+              <ul id="handoff-notes" class="handoff-notes"></ul>
+            </div>
             <p class="handoff-note">Files land in your own folder via the local companion.</p>
             <button id="again-btn" class="btn brief-go" type="button">Brief the team again</button>
           </div>
@@ -140,6 +144,16 @@
       <div class="panel">
         <h2>CI</h2>
         <div id="ci" class="ci ci-idle">waiting</div>
+      </div>
+
+      <!-- The Team: two developers, who builds what, shared files checked out,
+           questions, contract changes and the tech lead's decisions -->
+      <div class="panel team-panel">
+        <h2>Team</h2>
+        <div id="team-empty" class="team-empty">the developers start after the plan is approved</div>
+        <div id="team-lanes" class="team-lanes"></div>
+        <ul id="team-tasks" class="team-tasks"></ul>
+        <div id="team-meta" class="team-meta"></div>
       </div>
 
       <div class="panel log-panel">

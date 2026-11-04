@@ -8,7 +8,7 @@ fix: the workspace-file cache (reload on bind) and the server claim replay.
 
 import pytest
 
-from kiln.companion.executor import ExecutionError, Executor
+from kiln.companion.executor import Executor
 from kiln.companion.prompt import ApprovalPrompt, Reply
 from kiln.companion.protocol import AgentScope
 from kiln.config import Settings

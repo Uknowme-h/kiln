@@ -189,6 +189,36 @@ main {
 .ci-green { background: #d9ecd9; color: #1e5c31; }
 .ci-red { background: #f2d7d3; color: #7c2a20; }
 
+/* ── the team: two developers, their tasks, the lead ── */
+.team-panel { max-height: 34vh; overflow-y: auto; }
+.team-empty { color: var(--ink-500); font-size: 12px; }
+.team-lanes { display: flex; flex-direction: column; gap: 6px; }
+.team-lane {
+  padding: 6px 8px;
+  background: var(--cream-50);
+  box-shadow: inset 0 0 0 2px var(--ink-500);
+  font-size: 13px;
+  line-height: 1.3;
+}
+.team-lane.busy { box-shadow: inset 0 0 0 2px var(--ink-900); }
+.team-lane.paused { box-shadow: inset 0 0 0 2px var(--lemon); background: #fbf2dc; }
+.team-lane .who { font-weight: 600; color: var(--ink-900); }
+.team-lane .focus { color: var(--ink-500); font-size: 11px; margin-left: 4px; }
+.team-lane .now { color: var(--ink-700); font-size: 12px; overflow-wrap: anywhere; }
+.team-lane .files { color: var(--ink-500); font-size: 11px; overflow-wrap: anywhere; }
+.team-tasks { list-style: none; margin: 8px 0 0; padding: 0; font-size: 12px; }
+.team-tasks li {
+  display: flex; gap: 6px; align-items: baseline;
+  padding: 2px 0; border-bottom: 1px solid var(--cream-200); color: var(--ink-700);
+}
+.team-tasks .st { font-family: "Press Start 2P", monospace; font-size: 7px; min-width: 46px; }
+.team-tasks .st-pending { color: var(--ink-300); }
+.team-tasks .st-running { color: var(--lemon); }
+.team-tasks .st-done { color: var(--mint); }
+.team-tasks .st-failed { color: var(--accent); }
+.team-tasks .owner { margin-left: auto; color: var(--ink-500); font-size: 11px; white-space: nowrap; }
+.team-meta { margin-top: 8px; color: var(--ink-500); font-size: 11px; }
+
 /* ── event log ── */
 #log {
   list-style: none;
@@ -208,6 +238,10 @@ main {
 #log li::before { content: "▸ "; color: var(--accent); }
 #log li.you { color: var(--ink-900); background: var(--cream-200); }
 #log li.you::before { content: "✉ "; color: var(--lemon); }
+#log li.team { color: var(--ink-700); }
+#log li.team::before { content: "⇄ "; color: var(--sky); }
+#log li.lead { color: var(--ink-900); background: #fbf2dc; }
+#log li.lead::before { content: "★ "; color: var(--lemon); }
 
 /* ── the client console: Brief overlay, Note Dock, Handoff ── */
 /* dimming is painted inside the canvas (scene.setDimmed): a CSS filter on a
@@ -305,6 +339,17 @@ main {
 }
 .handoff-stats li::before { content: "▸ "; color: var(--accent); }
 .handoff-note { margin: 0; color: var(--ink-500); font-size: 12px; text-align: center; }
+.handoff-notes-wrap { width: 100%; }
+.handoff-sub {
+  margin: 0 0 6px; font-family: "Press Start 2P", monospace; font-size: 8px; color: var(--ink-700);
+}
+.handoff-notes {
+  list-style: none; margin: 0; padding: 6px 8px; max-height: 160px; overflow-y: auto;
+  background: var(--cream-50); box-shadow: inset 0 0 0 2px var(--ink-500);
+  font-size: 12px; color: var(--ink-700); text-align: left;
+}
+.handoff-notes li { padding: 2px 0; }
+.handoff-notes li::before { content: "• "; color: var(--accent); }
 
 /* ── pairing panel ── */
 .pair-card { max-width: 520px; width: min(520px, 94vw); }

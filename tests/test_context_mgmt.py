@@ -93,9 +93,10 @@ def test_offload_skips_small_and_status_tools(tmp_path: Path):
 
 
 def test_loop_compacts_with_structured_prompt_and_keeps_tail():
-    # Grow context via the initial user brief, not one giant tool result —
-    # a huge last_tool_chars trips the thrash skip instead of compact.
-    brief = "brief " * 2_000  # ~12k chars
+    # The threshold measures the work after the brief (a big brief alone must
+    # not compact): grow the history with several moderate reads — one giant
+    # tool result would trip the thrash skip instead of compacting.
+    brief = "brief " * 2_000  # ~12k chars, ignored by the threshold
 
     class GW:
         def __init__(self):
@@ -139,13 +140,14 @@ def test_loop_compacts_with_structured_prompt_and_keeps_tail():
                 "what_works": "ok",
                 "known_gaps": [],
             }
-            if self.n == 1:
-                return turn(call("read_file", {"path": "a.py"}))
+            self.turns = getattr(self, "turns", 0) + 1
+            if self.turns <= 5:
+                return turn(call("read_file", {"path": f"f{self.n}.py"}))
             return turn(call("submit_result", submit))
 
     async def call_tool(name, args):
         if name == "read_file":
-            return "ok-content"
+            return "x" * 1_500
         return "ok"
 
     gw = GW()
@@ -176,12 +178,20 @@ def test_loop_compacts_with_structured_prompt_and_keeps_tail():
         s for s in gw.seen if not str(s.get("agent_id", "")).endswith("/compact")
     ]
     assert post
-    # Large initial brief can compact before the first tool turn; the next
-    # model request must still carry the summary + bounded history.
+    # the first model call carries the whole brief uncompacted
+    assert not any("Conversation summary" in (m.get("content") or "") for m in post[0]["messages"])
+    # after compaction: the summary, the files already read, bounded history
     last_msgs = post[-1]["messages"]
+    assert "Files you already read this task" in last_msgs[1]["content"]
     assert last_msgs[0]["role"] == "system"
     assert any(
         "Conversation summary after compaction" in (m.get("content") or "")
         for m in last_msgs
     )
-    assert len(last_msgs) <= 2 + COMPACT_KEEP_TAIL
+    first_after = next(
+        s["messages"] for s in post
+        if any("Conversation summary" in (m.get("content") or "") for m in s["messages"])
+    )
+    assert len(first_after) <= 2 + COMPACT_KEEP_TAIL
+    # a second compaction re-wraps the original brief, never the first wrapper
+    assert last_msgs[1]["content"].count("<original_task>") == 1

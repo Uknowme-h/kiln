@@ -11,9 +11,13 @@ class Role(StrEnum):
     FIXER = "fixer"
     REVIEWER = "reviewer"
     REPORTER = "reporter"
+    SUPERVISOR = "supervisor"
 
 
 # Planning roles stay on Muse Spark. Coding roles prefer Muse Spark Open.
-# The reviewer judges against the brief — a reasoning task, so it rides Spark.
-SPARK_ROLES = frozenset({Role.REQUIREMENTS, Role.PLANNER, Role.TEST_AUTHOR, Role.REVIEWER})
+# The reviewer judges against the brief and the tech lead makes judgment calls
+# mid-build — reasoning tasks, so both ride Spark.
+SPARK_ROLES = frozenset(
+    {Role.REQUIREMENTS, Role.PLANNER, Role.TEST_AUTHOR, Role.REVIEWER, Role.SUPERVISOR}
+)
 OPEN_WEIGHT_ROLES = frozenset({Role.WORKER, Role.FIXER, Role.REPORTER})

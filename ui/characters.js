@@ -118,6 +118,9 @@ const KilnChars = (() => {
       c1: hex(A.lemon), pants: hex(T.ink[700]), mouth: "smile", satchel: true },
     reporter: { skin: "light", hairStyle: "short", hairColor: hex(A.mint), build: "slim",
       c1: hex(A.mint), pants: hex(T.ink[700]), mouth: "smile", apron: hex(T.cream[100]), ledger: true },
+    // the tech lead: a charcoal blazer and a clipboard of decisions
+    supervisor: { skin: "dark", hairStyle: "bun", hairColor: hex(T.ink[900]), build: "slim",
+      c1: hex(T.ink[500]), pants: hex(T.ink[900]), mouth: "smile", clip: true, sash: hex(A.lemon) },
   };
 
   const WORKER_VARIANTS = [

@@ -7,17 +7,70 @@ from pydantic import BaseModel, Field, ValidationInfo, model_validator
 from kiln.paths import paths_conflict, safe_relative_path
 
 
+BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
+
+
+class FieldSpec(BaseModel):
+    """One field of a request or response body — the unit both developers code against."""
+
+    name: str = Field(min_length=1, description="Exact JSON key, e.g. 'email'")
+    type: str = Field(
+        min_length=1,
+        description="string | integer | number | boolean | object | <type>[] | date-time",
+    )
+    required: bool = True
+    description: str = ""
+
+
+def _duplicate_names(fields: list[FieldSpec]) -> list[str]:
+    seen: set[str] = set()
+    return [f.name for f in fields if f.name in seen or seen.add(f.name)]
+
+
 class ContractRoute(BaseModel):
     method: str = Field(min_length=1)
     path: str = Field(min_length=1)
+    # short human summaries, kept for older plans; the field lists are the contract
     request: str = ""
     response: str = ""
+    kind: Literal["api", "page"] = Field(
+        default="api", description="api = JSON endpoint; page = a served UI page"
+    )
+    request_fields: list[FieldSpec] = Field(
+        default_factory=list, description="Body fields the client sends (POST/PUT/PATCH)"
+    )
+    response_fields: list[FieldSpec] = Field(
+        default_factory=list, description="Fields of the success response body"
+    )
+    status: int = Field(default=200, ge=100, le=599, description="Success status code")
+    errors: list[int] = Field(default_factory=list, description="Error status codes it may return")
+    auth: bool = Field(default=False, description="Requires a signed-in user")
+
+    def vagueness(self) -> list[str]:
+        """Why this route is too vague for two developers to build against."""
+        if self.kind == "page":
+            return []
+        problems = []
+        name = f"{self.method.upper()} {self.path}"
+        if self.method.upper() in BODY_METHODS and not self.request_fields:
+            problems.append(f"{name} has no request_fields")
+        if self.status != 204 and not self.response_fields:
+            problems.append(f"{name} has no response_fields (use status 204 for no body)")
+        for label, fields in (("request", self.request_fields), ("response", self.response_fields)):
+            duplicates = _duplicate_names(fields)
+            if duplicates:
+                problems.append(f"{name} repeats {label} field(s) {', '.join(duplicates)}")
+        return problems
 
 
 class Contract(BaseModel):
     """Shared interface the scaffold task writes and every feature task codes against."""
 
     routes: list[ContractRoute] = Field(default_factory=list)
+    error_shape: list[FieldSpec] = Field(
+        default_factory=list,
+        description="Fields of the one error body every api route returns on failure",
+    )
     modules: list[str] = Field(
         default_factory=list,
         description="Public signatures as short free-text lines",
@@ -122,6 +175,15 @@ class TaskGraph(BaseModel):
             raise ValueError(
                 f"criteria both covered by a task and deferred: {', '.join(sorted(both))}"
             )
+        if (info.context or {}).get("precise_contract") and self.contract is not None:
+            # two developers build both sides of every api route at once: the
+            # fields must be exact before either starts
+            problems = [p for route in self.contract.routes for p in route.vagueness()]
+            if problems:
+                raise ValueError(
+                    "the contract must list exact fields for every api route: "
+                    + "; ".join(problems[:8])
+                )
         criterion_ids = (info.context or {}).get("criterion_ids")
         if criterion_ids is not None and (covered or self.deferred):
             known = set(criterion_ids)

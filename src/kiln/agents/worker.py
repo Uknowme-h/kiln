@@ -180,21 +180,32 @@ def _tests_digest_block(suite: TestSuite | None, task: Task) -> str:
     if suite is None:
         return "<tests>\n(no suite provided)\n</tests>"
     task_covers = set(task.covers)
-    lines = []
+    own, other = [], []
     for file in suite.files:
         covers = sorted(set(file.covers))
         relevant = (not task_covers) or bool(task_covers & set(file.covers))
-        tag = "covers your task" if relevant else "read if a seam touches it"
         acs = ", ".join(covers) if covers else "none listed"
-        lines.append(f"- {file.path} ({tag}; ACs: {acs})")
-    return (
-        "<tests>\n"
+        (own if relevant else other).append(f"- {file.path} (ACs: {acs})")
+    parts = [
+        "<tests>",
         "The suite was written from the spec before you started; you may never "
-        "edit it or write under tests/. Read the exact files you need with "
-        "read_file before you code against them — do not guess their assertions:\n"
-        + "\n".join(lines)
-        + "\n</tests>"
-    )
+        "edit it or write under tests/. Do not guess assertions — read before you "
+        "code against them.",
+    ]
+    if own:
+        parts.append("Covers your task — read these whole with read_file:")
+        parts += own
+    if other:
+        # run-aa748f20: a scaffold "touched a seam" of every file, so its
+        # developer read the whole suite, and read it again after compaction
+        parts.append(
+            "The rest of the suite — do not read these whole. When your code "
+            "provides something they use (a route, field, import, element id), grep "
+            "them for that name and read only the matching lines:"
+        )
+        parts += other
+    parts.append("</tests>")
+    return "\n".join(parts)
 
 
 def _contract_digest(contract: Contract) -> str:
@@ -204,11 +215,9 @@ def _contract_digest(contract: Contract) -> str:
     drift reminder re-injects it on doom-loop refusal, step-cap, and after
     compaction — a digest re-asserts the seams without re-paying the JSON.
     """
-    lines = [f"{route.method} {route.path}" for route in contract.routes]
-    lines.extend(contract.modules)
-    if contract.shared_files:
-        lines.append("scaffold owns: " + ", ".join(contract.shared_files))
-    return "\n".join(lines)
+    from kiln.contract import contract_digest
+
+    return contract_digest(contract)
 
 
 def _current_files_block(current_files: dict[str, str]) -> str:
@@ -308,6 +317,7 @@ def _messages(
     discovery: str | None = None,
     plan_memo: str | None = None,
     handoffs: list[dict] | None = None,
+    team_context: str = "",
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
@@ -321,6 +331,7 @@ def _messages(
             design=design, discovery=discovery, prefer_design=ui_product
         )
         + plan_memo_block(plan_memo)
+        + (f"\n\n{team_context}" if team_context else "")
         + "\n"
         + _tests_block(suite)
         + _contract_block(contract)
@@ -376,6 +387,7 @@ def run(
     discovery: str | None = None,
     plan_memo: str | None = None,
     handoffs: list[dict] | None = None,
+    team_context: str = "",
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
@@ -387,6 +399,7 @@ def run(
         discovery=discovery,
         plan_memo=plan_memo,
         handoffs=handoffs,
+        team_context=team_context,
         ui_product=ui_product,
         prod_ops=prod_ops,
         security=security,
@@ -433,6 +446,16 @@ async def run_agentic(
     plan_memo: str | None = None,
     handoffs: list[dict] | None = None,
     retry_note: str = "",
+    team_context: str = "",
+    inbox: Callable[[], list[str]] | None = None,
+    on_notify: Callable[[str], Awaitable[str]] | None = None,
+    on_request_files: Callable[[list[str], str, bool], Awaitable[str]] | None = None,
+    extra_paths: Callable[[], list[str]] | None = None,
+    on_ask: Callable[[str, bool], Awaitable[str]] | None = None,
+    on_propose: Callable[..., Awaitable[str]] | None = None,
+    pre_submit: Callable[[list[str]], Awaitable[str | None]] | None = None,
+    on_escalate: Callable[..., Awaitable[str]] | None = None,
+    max_steps: int | None = None,
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
@@ -440,27 +463,64 @@ async def run_agentic(
 ) -> WorkerResult:
     """Tool-using developer on the user's machine.
 
-    ``retry_note`` is set when an earlier worker on this task failed without
+    ``retry_note`` is set when an earlier attempt at this task failed without
     delivering anything: it says why, so the fresh attempt avoids the same end.
+    ``team_context`` is the developer's view of the team (who owns what, the
+    board, its own earlier tasks); ``inbox`` delivers teammate messages
+    between turns; ``on_notify`` sends ``notify_peer`` notes (no callback: no
+    team, the tool is withheld). ``on_request_files`` handles shared-file
+    requests and ``extra_paths`` returns the files granted so far, which count
+    as owned when the result is checked. ``on_ask`` / ``on_propose`` back
+    ask_peer and propose_contract_change. ``pre_submit`` checks the written
+    files against the contract: its first complaint rejects the submit once,
+    a repeat is accepted and recorded as a known gap (it is a static check).
+    ``max_steps`` shortens a repair pass.
     """
     definition = definition_for(Role.WORKER)
-    system = system_prompt_for(Role.WORKER, ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills)
+    settings = gateway.settings
+    tool_names = _coding_tool_names(definition.tools, settings)
+    if on_notify is None:
+        tool_names = tuple(name for name in tool_names if name != "notify_peer")
+    if on_request_files is None:
+        tool_names = tuple(name for name in tool_names if name != "request_files")
+    if on_ask is None:
+        tool_names = tuple(name for name in tool_names if name != "ask_peer")
+    if on_propose is None:
+        tool_names = tuple(name for name in tool_names if name != "propose_contract_change")
+    if on_escalate is None:
+        tool_names = tuple(name for name in tool_names if name != "escalate")
+    # Agents with the skill tool get an on-demand index, not embedded packs.
+    skill_mode = "index" if "skill" in tool_names else "embed"
+    system = system_prompt_for(
+        Role.WORKER,
+        ui_product=ui_product,
+        prod_ops=prod_ops,
+        security=security,
+        extra_skills=extra_skills,
+        skill_mode=skill_mode,
+        required_skills=tuple(task.required_skills),
+    )
     shell = _shell_prompt(environment)
     if shell:
         system = system + "\n\n" + shell
     briefing = product_briefing_blocks(
         design=design, discovery=discovery, prefer_design=ui_product
     )
+    # Ordered for prompt caching, the way OpenCode orders its context: what is
+    # identical for every task and both developers first (the project brief),
+    # then the team board, then what is specific to this task.
     user = (
-        "Deliver your task with the tools. When finished, call submit_result.\n\n"
-        f"<task>\n{task.model_dump_json(indent=2)}\n</task>\n"
+        "Deliver your task with the tools. When finished, call submit_result. "
+        "The project brief comes first, then your team, then your task."
+        + _contract_block(contract)
+        + plan_memo_block(plan_memo)
+        + briefing
+        + _env_block(environment, stack_notes)
+        + (f"\n\n{team_context}" if team_context else "")
+        + f"\n\n<task>\n{task.model_dump_json(indent=2)}\n</task>\n"
         # Task-relevant ACs + file_plan, not the whole spec: the worker has its
         # task and tools; every user-story and unrelated criterion is per-turn cost.
         + spec_excerpt_for_task(spec, task)
-        + briefing
-        + plan_memo_block(plan_memo)
-        + _contract_block(contract)
-        + _env_block(environment, stack_notes)
         + "\n\n"
         + _tests_digest_block(suite, task)
         + _current_files_block(current_files or {})
@@ -472,7 +532,7 @@ async def run_agentic(
     if retry_note:
         user += (
             "\n\n<previous_attempt>\n"
-            f"A previous worker on this task ended without delivering: {retry_note}\n"
+            f"An earlier attempt at this task ended without delivering: {retry_note}\n"
             "Write your files early and call submit_result before you run out of "
             "steps; record anything unfinished as known_gaps.\n"
             "</previous_attempt>"
@@ -484,14 +544,22 @@ async def run_agentic(
     # is only an error when there is no deliverable at all, and then it is
     # rejected HERE, inside the loop, so the model can still do the work.
     verified_existing: list[str] = []
+    drift: list[str] = []  # the contract check's latest finding
+    drift_warned: list[bool] = []
+
+    def scope() -> Task:
+        """The task as currently leased: its owned paths plus granted borrows."""
+        extra = [p for p in (extra_paths() if extra_paths else []) if p not in task.owned_paths]
+        return task.model_copy(update={"owned_paths": [*task.owned_paths, *extra]}) if extra else task
 
     async def check(payload: SubmitDev) -> str | None:
         if payload.task_id != task.id:
             return f"task_id must be {task.id}"
+        allowed = scope().owned_paths
         for path in payload.files_written:
             if path.startswith("tests/"):
                 return "workers never write test files"
-            if not any(path == p or path.startswith(p.rstrip("/") + "/") for p in task.owned_paths):
+            if not any(path == p or path.startswith(p.rstrip("/") + "/") for p in allowed):
                 return f"{path} is outside the task's owned paths"
         if not payload.files_written:
             existing = await _existing_owned_files(call_tool, task)
@@ -502,6 +570,19 @@ async def run_agentic(
                     "them in files_written."
                 )
             verified_existing[:] = existing
+        if pre_submit is not None:
+            try:
+                complaint = await pre_submit(list(payload.files_written) or list(verified_existing))
+            except Exception:  # noqa: BLE001 — a broken check never blocks a submit
+                complaint = None
+            drift[:] = [complaint] if complaint else []
+            if complaint and not drift_warned:
+                drift_warned.append(True)
+                return (
+                    f"contract check: {complaint}. Implement the missing fields, or call "
+                    "propose_contract_change if the contract is wrong. If they are defined "
+                    "in a file you did not write (a model, the shared types), submit again."
+                )
         return None
 
     # re-asserted on doom-loop refusals and the step-cap handoff
@@ -512,14 +593,18 @@ async def run_agentic(
     if contract is not None:
         reminder += "; code against this contract:\n" + _contract_digest(contract)
 
-    settings = gateway.settings
-    tool_names = _coding_tool_names(definition.tools, settings)
     wrapped, todo_store, _quota = wrap_coding_tools(
         call_tool,
         gateway=gateway,
         settings=settings,
         agent_id=agent_id or "worker",
         transcript=transcript,
+        on_notify=on_notify,
+        on_request_files=on_request_files,
+        on_ask=on_ask,
+        on_propose=on_propose,
+        on_escalate=on_escalate,
+        required_skills=tuple(task.required_skills) if skill_mode == "index" else (),
     )
     try:
         outcome = await run_agent_loop(
@@ -530,7 +615,7 @@ async def run_agentic(
             tools=specs_for(tool_names),
             call_tool=wrapped,
             finish=SubmitDev,
-            max_steps=definition.max_steps,
+            max_steps=max_steps or definition.max_steps,
             max_tokens=definition.max_output_tokens,
             check=check,
             transcript=transcript,
@@ -541,9 +626,10 @@ async def run_agentic(
             enable_compaction=settings.enable_compaction,
             compact_threshold_chars=settings.compact_threshold_chars,
             prune_protect_chars=settings.prune_protect_chars,
+            inbox=inbox,
         )
     except AgentLoopError as exc:
-        salvaged = await _salvage(task, exc, call_tool, todo_store, transcript, agent_id)
+        salvaged = await _salvage(scope(), exc, call_tool, todo_store, transcript, agent_id)
         if salvaged is None:
             raise WorkerError(str(exc)) from exc
         return salvaged
@@ -553,6 +639,8 @@ async def run_agentic(
     for gap in todo_store.open_as_gaps():
         if gap not in gaps:
             gaps.append(gap)
+    for finding in drift:
+        gaps.append(f"contract check (static, unconfirmed): {finding}")
 
     # no changes needed: the deliverable is the owned files already on disk
     files = await _read_back(call_tool, list(outcome.result.files_written) or verified_existing)
@@ -570,7 +658,7 @@ async def run_agentic(
             "what_works": outcome.result.what_works,
             "known_gaps": gaps,
         },
-        context={"task_id": task.id, "owned_paths": task.owned_paths},
+        context={"task_id": task.id, "owned_paths": scope().owned_paths},
     )
 
 

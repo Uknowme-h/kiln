@@ -67,3 +67,14 @@ def test_remote_answer_too_late_is_dropped():
 def test_remote_questions_too_late_are_dropped():
     prompt = ApprovalPrompt(interactive=False, remote=True, output=lambda _: None)
     assert prompt.answer_questions_remotely([["x"]]) is False
+
+
+def test_unanswered_questions_expire_and_free_the_prompt():
+    """A mid-build question must not hold the prompt lock (and with it every
+    command approval) once its time is up."""
+    prompt = ApprovalPrompt(interactive=False, remote=True, output=lambda _: None)
+    questions = [Question("Lead", "Relative dates?", ["yes", "no"], False)]
+    assert prompt.ask_questions("Lena", questions, timeout=0.2) == [[]]
+    assert prompt.answer_questions_remotely([["yes"]]) is False  # nothing waits any more
+    assert prompt._lock.acquire(blocking=False)
+    prompt._lock.release()

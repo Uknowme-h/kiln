@@ -9,18 +9,19 @@ web tools ask the user in this terminal before they run.
 from __future__ import annotations
 
 import fnmatch
-import hashlib
 import json
+import os
 import re
 import shutil
 import threading
+import time
 import uuid
 from collections.abc import Callable
 from pathlib import Path
 
 from kiln.agents.definitions import DEFINITIONS
 from kiln.agents.roles import Role
-from kiln.companion.commandscan import scan_command
+from kiln.companion.commandscan import scan_command, write_targets
 from kiln.companion.leases import KeyedLocks, LeaseError, LeaseTable, ReadLedger
 from kiln.companion.permissions import PermissionDenied, PermissionEngine
 from kiln.companion.process import (
@@ -98,19 +99,46 @@ def _role_rules(role: str) -> Ruleset:
         return ()
 
 
-def _fingerprint(root: Path) -> dict[str, str]:
-    """sha256 of every regular file under root, workspace-relative paths."""
-    out: dict[str, str] = {}
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        rel = path.relative_to(root).as_posix()
-        if rel.startswith((".kiln/", ".venv/", "node_modules/", "vendor/", ".deps/")):
-            continue
-        try:
-            out[rel] = hashlib.sha256(path.read_bytes()).hexdigest()
-        except OSError:
-            continue
+# Folders the after-shell change check never walks, at any depth: installs,
+# VCS data, build output and caches. A nested frontend/node_modules used to be
+# hashed file by file on every shell call.
+_FINGERPRINT_SKIP = frozenset(
+    {
+        "node_modules", ".git", ".venv", "venv", ".kiln", ".next", ".nuxt", "dist",
+        "build", "out", "coverage", "__pycache__", ".pytest_cache", ".mypy_cache",
+        ".ruff_cache", ".turbo", ".cache", "vendor", ".deps",
+    }
+)  # fmt: skip
+_FINGERPRINT_MAX_FILES = 20_000
+# Dependency manifests and lockfiles: an install command run by either
+# developer may legitimately change them (adding a dependency).
+_SHARED_MANIFESTS = frozenset(
+    {
+        "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+        "pnpm-lock.yaml", "requirements.txt", "pyproject.toml", "poetry.lock", "uv.lock",
+    }
+)  # fmt: skip
+
+
+def _fingerprint(root: Path) -> dict[str, tuple[int, int]] | None:
+    """(size, mtime_ns) of every source file under root, or None if too many.
+
+    Stat signatures, not content hashes: the check runs around every shell
+    command, and reading every file each time was the slow part.
+    """
+    out: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _FINGERPRINT_SKIP]
+        base = Path(dirpath)
+        for name in filenames:
+            path = base / name
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            out[path.relative_to(root).as_posix()] = (stat.st_size, stat.st_mtime_ns)
+            if len(out) > _FINGERPRINT_MAX_FILES:
+                return None
     return out
 
 
@@ -161,6 +189,13 @@ class Executor:
         self._python_argv: list[str] | None = None
         self._peers: dict[str, dict] = {}
         self._peers_lock = threading.Lock()
+        # who last wrote each path through the file tools, and when — so a
+        # shell command is not blamed for a teammate's concurrent tool write
+        self._tool_writes: dict[str, tuple[str, float]] = {}
+        # (agent, start, end) of recent shell commands, to tell when two
+        # developers' commands overlapped
+        self._shell_runs: list[tuple[str, float, float | None]] = []
+        self._shell_lock = threading.Lock()
         self.root: Path | None = None
         self.background: BackgroundJobs | None = None
         if workspace is not None:
@@ -734,6 +769,15 @@ class Executor:
             raise self.permissions.deny(
                 agent_id, "shell", validated.command, "refused: destructive command"
             )
+        workdir_rel = validated.workdir or "."
+        _, cwd = self._resolve(workdir_rel)
+        if not cwd.is_dir():
+            raise ExecutionError(f"workdir does not exist: {workdir_rel}")
+        # Checked before anyone is asked, and never skipped by auto-approve: a
+        # shell write must respect the same boundaries as write_file.
+        problem = self._shell_write_problem(validated.command, cwd, agent_id)
+        if problem:
+            raise self.permissions.deny(agent_id, "shell", validated.command, f"refused: {problem}")
         action = "install" if scan.installs else "shell"
         note = ""
         if scan.opaque:
@@ -761,12 +805,9 @@ class Executor:
             call_id=call_id,
             notify=notify,
         )
-        workdir_rel = validated.workdir or "."
-        _, cwd = self._resolve(workdir_rel)
-        if not cwd.is_dir():
-            raise ExecutionError(f"workdir does not exist: {workdir_rel}")
         timeout = (validated.timeout_ms or DEFAULT_TIMEOUT_SECONDS * 1000) / 1000
-        before = _fingerprint(self.root) if owned or agent_id in self.leases.active_agents() else None
+        watched = bool(owned) or agent_id in self.leases.active_agents()
+        before = _fingerprint(self.root) if watched else None
         if validated.background:
             job_id, log_path = self.background.start(
                 shell_argv(self.env.shell, validated.command),
@@ -778,26 +819,115 @@ class Executor:
                 f"{log_path.relative_to(self.root).as_posix()}. "
                 "You will not be notified automatically; do not poll."
             )
-        if action == "install":
-            with self.install_lock:
+        started = time.monotonic()
+        run = (agent_id, started, None)
+        with self._shell_lock:
+            self._shell_runs.append(run)
+        try:
+            if action == "install":
+                with self.install_lock:
+                    result = run_shell(validated.command, self.env.shell, cwd, timeout)
+            else:
                 result = run_shell(validated.command, self.env.shell, cwd, timeout)
-        else:
-            result = run_shell(validated.command, self.env.shell, cwd, timeout)
-        if before is not None:
-            after = _fingerprint(self.root)
-            leaked = [
-                path
-                for path, digest in after.items()
-                if before.get(path) != digest and not self._owned_by(agent_id, path)
-            ]
-            if leaked:
+        finally:
+            ended = time.monotonic()
+            with self._shell_lock:
+                self._shell_runs.remove(run)
+                self._shell_runs.append((agent_id, started, ended))
+                del self._shell_runs[:-50]
+        output = result.render(timeout)
+        if before is None:
+            return output
+        after = _fingerprint(self.root)
+        if after is None:
+            return output
+        leaked, manifests = self._attribute_changes(
+            before, after, agent_id, started, ended, installs=action == "install"
+        )
+        if manifests:
+            output += "\n[note: this install updated shared manifests: " + ", ".join(manifests) + "]"
+        if leaked:
+            output += (
+                "\n[warning: this command changed files outside your lease: "
+                + ", ".join(leaked[:12])
+                + "]"
+            )
+        return output
+
+    def _shell_write_problem(self, command: str, cwd: Path, agent_id: str) -> str:
+        """Why a command's literal write targets are not allowed, or ''.
+
+        A target outside the workspace is refused for everyone; a target leased
+        to another agent is refused like write_file would refuse it. Targets
+        the scanner cannot read literally are left to the approval prompt and
+        the after-run check.
+        """
+        root = self._require_root().resolve()
+        for raw in write_targets(command, self.env.shell.kind):
+            candidate = Path(raw).expanduser()
+            if not candidate.is_absolute():
+                candidate = cwd / candidate
+            resolved = Path(os.path.normpath(str(candidate)))
+            try:
+                relative = resolved.relative_to(root).as_posix()
+            except ValueError:
+                return f"it would write {raw}, which is outside the workspace"
+            if relative in ("", "."):
+                continue
+            owner = self.leases.owner_of(relative)
+            if owner is not None and owner[0] != agent_id:
                 return (
-                    result.render(timeout)
-                    + "\n[warning: this command changed files outside your lease: "
-                    + ", ".join(leaked[:12])
-                    + "]"
+                    f"it would write {relative}, which is leased to {owner[1]}; ask them "
+                    "with notify_peer or record a known_gap instead"
                 )
-        return result.render(timeout)
+        return ""
+
+    def _attribute_changes(
+        self,
+        before: dict[str, tuple[int, int]],
+        after: dict[str, tuple[int, int]],
+        agent_id: str,
+        started: float,
+        ended: float,
+        *,
+        installs: bool,
+    ) -> tuple[list[str], list[str]]:
+        """Changes this command made to files another agent owns, plus manifests.
+
+        Not blamed on this command: files the other agent wrote through its own
+        tools while it ran, files owned by an agent whose shell command ran at
+        the same time (ambiguous — the owner may have changed them), unowned
+        files (build output, caches), and dependency manifests changed by an
+        install (any developer may add a dependency; reported as a note).
+        """
+        changed = sorted(
+            path
+            for path in set(before) | set(after)
+            if before.get(path) != after.get(path)
+        )
+        with self._shell_lock:
+            overlapping = {
+                other
+                for other, start, end in self._shell_runs
+                if other != agent_id and start < ended and (end is None or end > started)
+            }
+            tool_writes = dict(self._tool_writes)
+        leaked: list[str] = []
+        manifests: list[str] = []
+        for path in changed:
+            if installs and path.rsplit("/", 1)[-1] in _SHARED_MANIFESTS:
+                manifests.append(path)
+                continue
+            owner = self.leases.owner_of(path)
+            if owner is None or owner[0] == agent_id:
+                continue
+            written = tool_writes.get(path)
+            if written is not None and written[0] == owner[0] and written[1] >= started:
+                continue
+            if owner[0] in overlapping:
+                continue
+            leaked.append(path)
+        return leaked, manifests
 
     def _owned_by(self, agent_id: str, path: str) -> bool:
         try:
@@ -844,7 +974,7 @@ class Executor:
                     ],
                 )
             )
-        answers = self.prompt.ask_questions(label, questions)
+        answers = self.prompt.ask_questions(label, questions, timeout=validated.timeout_seconds)
         if notify is not None:
             notify(
                 ToolProgress(
@@ -1013,7 +1143,9 @@ class Executor:
                 )
             except ValueError as exc:
                 raise ExecutionError(str(exc)) from exc
-        commands = profile.install_deps_commands(root_path, self.env.os, self._python_argv)
+        commands = profile.install_deps_commands(
+            root_path, self.env.os, self._python_argv, venv_root=self._require_root()
+        )
         if manifest_notes and not commands:
             commands = [["npm", "install"]]
         if not commands:
@@ -1365,16 +1497,20 @@ class Executor:
         if not owned:
             raise ExecutionError("claim_scope needs owned_paths")
         self.leases.claim(agent_id, label, owned)
-        peer = {
-            "id": agent_id,
-            "label": label,
-            "owned_paths": owned,
-            "status": str(tool_input.get("status") or "working"),
-            "task": str(tool_input.get("task") or ""),
-            "files": list(tool_input.get("files") or []),
-        }
+        task = str(tool_input.get("task") or "")
         with self._peers_lock:
-            self._peers[agent_id] = peer
+            previous = self._peers.get(agent_id) or {}
+            # re-claiming for the same task (a borrowed file added to the lease)
+            # keeps the record of what this agent already wrote
+            files = list(previous.get("files") or []) if previous.get("task") == task else []
+            self._peers[agent_id] = {
+                "id": agent_id,
+                "label": label,
+                "owned_paths": owned,
+                "status": str(tool_input.get("status") or "working"),
+                "task": task,
+                "files": files + [f for f in tool_input.get("files") or [] if f not in files],
+            }
         self._persist_scope_state()
         return f"leased {', '.join(owned)} to {label}"
 
@@ -1388,6 +1524,8 @@ class Executor:
 
     def _note_peer_write(self, agent_id: str, relative: str) -> None:
         """Keep list_peers honest: it promises the files each peer has written."""
+        with self._shell_lock:
+            self._tool_writes[relative] = (agent_id, time.monotonic())
         with self._peers_lock:
             peer = self._peers.get(agent_id)
             if peer is not None:

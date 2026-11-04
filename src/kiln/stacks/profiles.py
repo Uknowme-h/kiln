@@ -161,13 +161,25 @@ class StackProfile:
     dev_notes: str
 
     def install_deps_commands(
-        self, workspace: Path, os_name: str, python_argv: list[str] | None = None
+        self,
+        workspace: Path,
+        os_name: str,
+        python_argv: list[str] | None = None,
+        venv_root: Path | None = None,
     ) -> list[list[str]]:
+        """Install commands, run with ``workspace`` (the root being installed) as cwd.
+
+        Python: one virtual environment for the whole product, at ``venv_root``
+        (the workspace root). The suite runs from there and the developers are
+        told to use it; a ``backend/.venv`` per root left the suite without the
+        backend's packages (run-aa748f20: "No module named 'fastapi'").
+        """
         if self.id == "python":
+            home = venv_root or workspace
             commands: list[list[str]] = []
-            venv_py = venv_python(workspace, os_name)
+            venv_py = venv_python(home, os_name)
             if not venv_py.exists():
-                commands.append([*(python_argv or ["python"]), "-m", "venv", VENV_DIR])
+                commands.append([*(python_argv or ["python"]), "-m", "venv", str(home / VENV_DIR)])
             pip = [str(venv_py), "-m", "pip", "install", "-q", "pytest"]
             if (workspace / "requirements.txt").is_file():
                 pip += ["-r", "requirements.txt"]

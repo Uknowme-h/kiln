@@ -92,8 +92,9 @@ def _graph_messages(
             "\n\nYour previous reply failed validation with this error:\n"
             f"<validation_error>\n{error}\n</validation_error>\n"
             "Fix the reply so it validates. Common causes: overlapping owned paths, "
-            "a dependency cycle, a task with no owned paths, or an acceptance "
-            "criterion neither covered by a task nor listed in deferred. Return "
+            "a dependency cycle, a task with no owned paths, an acceptance "
+            "criterion neither covered by a task nor listed in deferred, or an api "
+            "route without exact request_fields / response_fields. Return "
             "corrected JSON only."
         )
     if not messages:
@@ -133,16 +134,17 @@ class _Attempt:
             )
         self.last_content = completion.content
         return TaskGraph.model_validate_json(
-            completion.content, context={"criterion_ids": self.criterion_ids}
+            completion.content,
+            context={"criterion_ids": self.criterion_ids, "precise_contract": True},
         )
 
     def lenient(self, second: ValidationError) -> TaskGraph:
-        """Accept the last reply without the coverage cross-check, or re-raise.
+        """Accept the last reply without the coverage / precision checks, or re-raise.
 
-        Scope coverage is the only spec-dependent check. A graph that is sound
-        on its own (ownership, dependencies, scaffolds) but mis-tracks coverage
-        twice is still buildable — failing the run over it is worse than the
-        pre-coverage behaviour (blame falls back to the scaffold)."""
+        Scope coverage and contract precision are the quality checks. A graph
+        that is sound on its own (ownership, dependencies, scaffolds) but stays
+        imprecise after a retry is still buildable — failing the run over it is
+        worse: the developers fall back to reading each other's code."""
         if self.last_content is None:
             raise PlannerError(f"planner produced an invalid task graph twice: {second}") from second
         try:
@@ -291,6 +293,14 @@ async def run_agentic(
 # ── the durable plan documents ───────────────────────────────────────────────
 
 
+def _fields_inline(fields) -> str:
+    """`{email: string, password: string, name?: string}` for the contract doc."""
+    if not fields:
+        return ""
+    parts = [f"{f.name}{'' if f.required else '?'}: {f.type}" for f in fields]
+    return "{" + ", ".join(parts) + "}"
+
+
 def render_plan_markdown(spec: Spec, graph: TaskGraph) -> str:
     """`docs/contract.md`: the machine contract plus the task table, rendered
     deterministically from the validated graph so the whole team (and the user)
@@ -310,9 +320,26 @@ def render_plan_markdown(spec: Spec, graph: TaskGraph) -> str:
         lines.append("## Routes")
         for route in contract.routes:
             entry = f"- `{route.method} {route.path}`"
+            if route.kind == "page":
+                entry += " (page)"
+            if route.auth:
+                entry += " · auth"
             if route.request or route.response:
                 entry += f" — req: {route.request or '–'} → res: {route.response or '–'}"
             lines.append(entry)
+            if route.request_fields:
+                lines.append(f"  - request: {_fields_inline(route.request_fields)}")
+            if route.response_fields or route.kind == "api":
+                body = _fields_inline(route.response_fields) or (
+                    "no body" if route.status == 204 else "fields not listed"
+                )
+                lines.append(f"  - {route.status}: {body}")
+            if route.errors:
+                lines.append(f"  - errors: {', '.join(str(code) for code in route.errors)}")
+        lines.append("")
+    if contract.error_shape:
+        lines.append("## Error body (every api route)")
+        lines.append(f"- {_fields_inline(contract.error_shape)}")
         lines.append("")
     if contract.shared_files:
         lines.append("## Shared files (scaffold owns)")

@@ -179,8 +179,13 @@ const KilnScene = (() => {
     seat("o2", 290, 226, "290,226", false),
   ];
   const OVERFLOW_LABEL_W = 92;
+  // the tech lead runs the room from the head of the meeting table: no desk,
+  // they walk over to whoever escalates and come back after deciding
+  const LEAD_SEATS = {
+    supervisor: seat("supervisor", 290, 226, "270,226", false),
+  };
   const DESK_SEATS = [...Object.values(FIXED_SEATS), ...BUILD_SEATS];
-  const ALL_SEATS = [...DESK_SEATS, ...OVERFLOW_SEATS];
+  const ALL_SEATS = [...DESK_SEATS, ...Object.values(LEAD_SEATS), ...OVERFLOW_SEATS];
 
   const WORKER_NOTE_COLORS = [
     T.accent.coral, T.accent.mint, T.accent.sky, T.accent.lemon, T.accent.lilac, T.accent.peach,
@@ -192,10 +197,12 @@ const KilnScene = (() => {
     return T.accent.lemon;
   }
 
-  // Short desk label: "Worker 3" stays whole so parallel workers stay distinct.
+  // Short desk label: "Worker 3" and "Dev A" stay whole so parallel developers
+  // stay distinct ("Dev A (backend)" used to collapse to "Dev" on both desks).
   function shortLabel(label) {
     const s = String(label || "");
-    return /^Worker \d+$/.test(s) ? s : s.split(" ")[0];
+    const m = /^(Worker \d+|Dev [A-Z])\b/.exec(s);
+    return m ? m[1] : s.split(" ")[0];
   }
 
   // The simulation runs on a fixed 60 Hz step, so walking, bobbing and
@@ -253,6 +260,7 @@ const KilnScene = (() => {
     reviewer: [["printer", 3], ["board", 3], ["coffee", 2]],
     reporter: [["printer", 4], ["couch1", 2], ["coffee", 2]],
     fixer: [["cooler", 3], ["water", 2], ["coffee", 2], ["couch2", 1]],
+    supervisor: [["board", 4], ["whiteboard", 2], ["coffee", 2], ["cooler", 1]],
   };
   const CODE_COLORS = [T.accent.mint, T.accent.sky, T.accent.lemon, T.accent.lilac];
 
@@ -324,7 +332,7 @@ const KilnScene = (() => {
 
     // ── seating ──
     function claimSeat(a) {
-      const fixed = FIXED_SEATS[a.id];
+      const fixed = FIXED_SEATS[a.id] || LEAD_SEATS[a.id];
       if (fixed && !fixed.occupant) return fixed;
       let s = BUILD_SEATS.find((x) => !x.occupant);
       if (!s) {

@@ -262,7 +262,22 @@ def test_the_agentic_worker_gets_a_test_digest_not_bodies():
     assert "tests/test_tasks.py" in user  # the path to read
     assert "read_file" in user  # the instruction to read it
     assert "padding" not in user  # the body is NOT inlined
-    assert "covers your task" in user
+    assert "Covers your task" in user
+
+
+def test_other_suite_files_are_grepped_not_read_whole():
+    """run-aa748f20: a scaffold read all six test files, then again after compaction."""
+    task = TASK.model_copy(update={"covers": ["c1"]})
+    suite = TestSuite.model_validate({"spec_title": "Tasks", "files": [
+        {"path": "tests/test_mine.py", "content": "x", "covers": ["c1"]},
+        {"path": "tests/test_other.py", "content": "x", "covers": ["c2"]},
+    ]})
+    block = worker._tests_digest_block(suite, task)
+    own, rest = block.split("The rest of the suite")
+    assert "tests/test_mine.py" in own and "read these whole" in own
+    assert "tests/test_other.py" in rest and "grep" in rest and "do not read these whole" in rest
+    assert "The rest of the suite" not in worker._tests_digest_block(
+        suite.model_copy(update={"files": suite.files[:1]}), task)
 
 
 def test_the_agentic_worker_gets_a_spec_excerpt_not_the_whole_spec():

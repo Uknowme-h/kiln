@@ -318,19 +318,20 @@ def test_compaction_reinjects_the_brief_intact():
             if str(kwargs.get("agent_id", "")).endswith("/compact"):
                 return Completion(content="## Objective\nx", model="m", prompt_tokens=1, completion_tokens=1)
             GW.n += 1
-            if GW.n == 1:
-                return _tool_turn("read_file", {"path": "a.py"}, "r1")
+            if GW.n <= 2:
+                return _tool_turn("read_file", {"path": f"f{GW.n}.py"}, f"r{GW.n}")
             return _tool_turn("submit_result", {
                 "task_id": "t1", "summary": "s", "files_written": ["a.py"],
                 "what_works": "w", "known_gaps": []})
 
     async def call_tool(name, args):
-        return "body " * 400
+        return "body " * 120
 
+    # the threshold counts the history after the brief: two reads cross it
     asyncio.run(run_agent_loop(
         gateway=GW(), role=Role.WORKER, system="sys", user=brief,
         tools=specs_for(("read_file", "submit_result")), call_tool=call_tool,
-        finish=SubmitDev, max_steps=5, compact_threshold_chars=15_000,
+        finish=SubmitDev, max_steps=5, compact_threshold_chars=1_200,
     ))
     compact = [msgs for aid, msgs in seen if str(aid).endswith("/compact")]
     assert compact

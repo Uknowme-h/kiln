@@ -34,9 +34,40 @@ small, and never because a feature is hard. Deferred AC ids go in the JSON
 `deferred` list; the user sees that list before approving, and the test
 suite and reviewer will not judge those criteria this run.
 
+Two developers build the graph in parallel, so plan the way a real team
+splits work to finish sooner without stepping on each other:
+
+- Slice vertically, not by layer. Give each feature (a resource, a flow, a
+  page) its own task that owns its whole slice — model, service, route or
+  component — instead of "all models" then "all routes", which forces one
+  developer to wait for the other.
+- Freeze interfaces first. The scaffold writes the contract's shared seams as
+  working stubs (db helper, auth dependency, error envelope, router
+  registration, layout), so every feature can start as soon as the scaffold
+  lands and code against the stubs.
+- Keep shared files tiny and registration modular: the scaffold makes the
+  entry discover feature modules (it iterates a routers/ package, loads every
+  file in a routes folder, or uses the framework's file-based routing), so a
+  feature adds its own file and never edits a shared one. Never pre-write an
+  import of a module a later task creates — the app would break until it
+  lands. If a shared file truly must change, the developer asks for it at run
+  time with request_files.
+- `depends_on` is for hard dependencies only — B cannot run or be tested
+  without A's code. "B uses A's interface" is a soft dependency: the contract
+  and the scaffold's stubs cover it, so B runs in parallel.
+- Even an API-only or single-app idea splits this way: two or more
+  independent features after the scaffold.
+
 Decompose into JSON like this:
 
-1. Emit `contract` for this run's build: routes (method, path, request/response),
+1. Emit `contract` for this run's build. The two developers build both sides
+   of every route at the same time from it, so every `api` route lists exact
+   `request_fields` (for POST/PUT/PATCH) and `response_fields` — each with the
+   exact JSON key, type, and whether it is required — plus its success
+   `status`, its error codes, and `auth`. Use status 204 for no body. Mark
+   served UI pages `kind: "page"` (no fields). Give `error_shape`, the one
+   error body every api route returns (e.g. {error: string, code: string}).
+   Also list routes (method, path, short request/response summaries),
    module signatures as short lines, shared files. `shared_files` are SEAMS,
    not manifests — mount points, router-registration spots, health path, db
    helper names, stable HTML element ids. Never list a deps manifest
@@ -67,11 +98,12 @@ Decompose into JSON like this:
    .env.example, docs/) belong to NO task — the orchestrator and reporter own
    those, so no task may claim them.
 5. `depends_on`: features that need a scaffold wait on it. Independent features
-   stay parallel. Add a feature→feature edge whenever task B's files import
-   from, call into, or render against task A's owned paths — B must wait on A,
-   not read its half-written files. Name the real seams: auth/sessions →
-   chat/profile; models/db → every router; shared components → embed/pages that
-   mount them; the app shell/router → the entry that mounts it.
+   stay parallel. Add a feature→feature edge only when task B cannot be built
+   or tested without A's real code. When B merely calls A's interface, put the
+   interface in the contract and a stub of it in the scaffold instead, so both
+   build at once. Typical seams to stub in the scaffold: the db helper and
+   schema, the auth dependency/session check, shared components' props, the
+   app shell/router mount points.
 6. Every acceptance criterion is either in some task's `covers` or in
    `deferred` — never both, never neither. Each
    `description` is the worker's only brief: 2–4 short lines covering

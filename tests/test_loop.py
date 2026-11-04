@@ -164,7 +164,10 @@ def test_the_third_identical_call_is_refused_and_repeated_strikes_end_the_run():
     log = []
     with pytest.raises(AgentLoopError, match="stuck"):
         drive(gateway, log, max_steps=10)
-    assert len(log) == 2  # the third and later identical calls never reach the tool
+    # the second read is answered from the conversation (its result is still
+    # there); the third and later are refused — none reaches the tool again
+    assert len(log) == 1
+    assert "Unchanged" in gateway.seen[2]["messages"][-1]["content"]
     assert "Refused" in gateway.seen[3]["messages"][-1]["content"]
 
 

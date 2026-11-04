@@ -25,6 +25,11 @@ class CompanionUnavailable(RuntimeError):
     """No companion is attached to the run, or the call timed out."""
 
 
+# The call never reached a companion (none attached within the wait), so it is
+# safe to repeat — unlike one cut off mid-flight.
+NO_COMPANION = "no companion attached to this run"
+
+
 class ToolFailed(CompanionUnavailable):
     """The companion ran the tool and it failed. The message is safe to show the model."""
 
@@ -359,7 +364,7 @@ class CompanionRegistry:
                 await asyncio.wait_for(event.wait(), timeout=5)
             except TimeoutError:
                 pass
-        raise CompanionUnavailable("no companion attached to this run")
+        raise CompanionUnavailable(NO_COMPANION)
 
     async def answer_approval(
         self,
@@ -375,7 +380,7 @@ class CompanionRegistry:
 
         connection = self.connections.get(run_id)
         if connection is None:
-            raise CompanionUnavailable("no companion attached to this run")
+            raise CompanionUnavailable(NO_COMPANION)
         answer = ApprovalAnswer(
             approved=approved, scope=scope, feedback=feedback, answers=answers
         )
@@ -389,7 +394,7 @@ class CompanionRegistry:
 
         connection = self.connections.get(run_id)
         if connection is None:
-            raise CompanionUnavailable("no companion attached to this run")
+            raise CompanionUnavailable(NO_COMPANION)
         await connection.websocket.send_text(AutoApprove(enabled=enabled).model_dump_json())
         self.runs[run_id].auto_approve = bool(enabled)
 

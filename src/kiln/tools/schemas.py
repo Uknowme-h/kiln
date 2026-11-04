@@ -5,6 +5,8 @@ companion validates again on arrival (never trust the wire). Nothing in this
 module executes anything.
 """
 
+from typing import Literal
+
 from pydantic import BaseModel, Field, field_validator
 
 from kiln.paths import safe_relative_path
@@ -116,6 +118,10 @@ class Question(BaseModel):
 
 class AskUser(BaseModel):
     questions: list[Question] = Field(min_length=1, max_length=5)
+    # Set by Kiln for mid-build questions: after this long the questions count
+    # as skipped, so an absent user never holds the prompt (and with it every
+    # command approval) forever. None waits for an answer.
+    timeout_seconds: int | None = Field(default=None, ge=30, le=3600)
 
 
 class WebSearch(BaseModel):
@@ -151,6 +157,94 @@ class Skill(BaseModel):
     """Load a built-in Kiln skill by name (local; never hits the workspace)."""
 
     name: str = Field(min_length=1, description="Skill id, e.g. ui_product, prod_ops, security")
+
+
+class NotifyPeer(BaseModel):
+    """Send a short note to your teammate developer."""
+
+    message: str = Field(
+        min_length=1,
+        max_length=1200,
+        description="What changed or what you need: name the file, route, export or id",
+    )
+    reply_to: str | None = Field(
+        default=None, description="Question id (e.g. Q3) when this message answers a question"
+    )
+
+
+class AskPeer(BaseModel):
+    """Ask your teammate a question only they can answer."""
+
+    question: str = Field(min_length=1, max_length=600)
+    wait: bool = Field(
+        default=False,
+        description=(
+            "false = keep working, the answer arrives as a message; true = pause "
+            "until they answer (only when nothing else can move)"
+        ),
+    )
+
+
+class Escalate(BaseModel):
+    """Bring a problem to the tech lead."""
+
+    kind: Literal["product", "environment", "plan", "blocked"] = Field(
+        description=(
+            "product = a product decision nobody recorded; environment = the machine or "
+            "toolchain is in the way; plan = your task is too big, missing a dependency or "
+            "a helper task; blocked = anything else stopping you"
+        )
+    )
+    summary: str = Field(min_length=1, max_length=400, description="The problem in one sentence")
+    details: str = Field(
+        default="", max_length=4000,
+        description="What you tried, the exact error or output, the options you see",
+    )
+    wait: bool = Field(
+        default=True,
+        description="true = pause until the lead decides; false = keep working, the decision arrives as a message",
+    )
+
+
+class ContractField(BaseModel):
+    name: str = Field(min_length=1, description="Exact JSON key")
+    type: str = Field(min_length=1, description="string | integer | number | boolean | object | <type>[]")
+    required: bool = True
+    description: str = ""
+
+
+class ProposeContractChange(BaseModel):
+    """Change (or add) one api route of the shared contract."""
+
+    method: str = Field(min_length=1, description="HTTP method of the route")
+    path: str = Field(min_length=1, description="Route path exactly as in the contract")
+    request_fields: list[ContractField] | None = Field(
+        default=None, description="The full new request field list, or null to keep it"
+    )
+    response_fields: list[ContractField] | None = Field(
+        default=None, description="The full new response field list, or null to keep it"
+    )
+    status: int | None = Field(default=None, description="New success status, or null to keep it")
+    reason: str = Field(min_length=1, max_length=400, description="Why the contract must change")
+
+
+class RequestFiles(BaseModel):
+    """Ask to edit files outside your task's owned paths."""
+
+    paths: list[str] = Field(
+        min_length=1, max_length=8, description="Workspace-relative files you need to edit"
+    )
+    reason: str = Field(
+        min_length=1, max_length=300, description="What you will change and why"
+    )
+    wait: bool = Field(
+        default=False,
+        description=(
+            "If a teammate holds a file: false = keep working on your other files and "
+            "get a message when it is yours; true = pause until it is released "
+            "(only when nothing else in your task can move)"
+        ),
+    )
 
 
 class SpawnExplore(BaseModel):

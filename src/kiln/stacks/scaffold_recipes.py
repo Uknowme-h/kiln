@@ -176,6 +176,23 @@ RECIPES: dict[str, Recipe] = {
 }
 
 
+# The minimum a developer must write by hand when a root's official scaffold
+# cannot run (it failed, or the user declined it): the manifest and the config
+# the framework will not start without. Paths are relative to the root.
+SKELETON_FILES: dict[str, tuple[str, ...]] = {
+    "nextjs": ("package.json", "next.config.ts", "tsconfig.json", "next-env.d.ts"),
+    "vite_react": ("package.json", "vite.config.ts", "tsconfig.json", "index.html"),
+    "nestjs": ("package.json", "nest-cli.json", "tsconfig.json"),
+    "express": ("package.json",),
+    "fastapi": ("requirements.txt", "app/__init__.py", "app/main.py"),
+    "flask": ("requirements.txt", "app/__init__.py"),
+}
+
+
+def skeleton_files(framework: str) -> tuple[str, ...]:
+    return SKELETON_FILES.get(framework, ())
+
+
 def recipe_for(framework: str) -> Recipe:
     try:
         return RECIPES[framework]

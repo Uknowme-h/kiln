@@ -37,6 +37,9 @@ class RunFinished(BaseModel):
     run_id: str = Field(min_length=1)
     green: bool
     wall_clock_seconds: float = Field(ge=0)
+    # what went wrong during the build and how the team recovered (failed
+    # tasks, repairs, contract changes, the lead's decisions) — the Handoff
+    notes: list[str] = Field(default_factory=list)
 
 
 class AgentStatus(BaseModel):
@@ -133,6 +136,50 @@ class TranscriptTick(BaseModel):
     summary: str = ""
 
 
+TeamCategory = Literal[
+    "note", "question", "answer", "checkout", "contract", "status", "escalation", "decision"
+]
+
+
+class TeamEvent(BaseModel):
+    """Something the team said to each other: rendered as an envelope between
+    desks, a line in the event log and the team feed."""
+
+    kind: Literal["team_event"] = "team_event"
+    category: TeamCategory
+    from_agent: str = Field(min_length=1)
+    to_agent: str = Field(min_length=1)
+    text: str = Field(min_length=1)
+
+
+class TeamLane(BaseModel):
+    agent_id: str
+    label: str
+    focus: str = "shared"
+    current: str | None = None
+    current_title: str = ""
+    checked_out: list[str] = Field(default_factory=list)
+    paused: bool = False
+
+
+class TeamTask(BaseModel):
+    id: str
+    title: str
+    agent_id: str
+    status: Literal["pending", "running", "done", "failed"]
+
+
+class TeamUpdate(BaseModel):
+    """A snapshot of the team board for the Team panel. Small by design."""
+
+    kind: Literal["team_update"] = "team_update"
+    lanes: list[TeamLane] = Field(default_factory=list)
+    tasks: list[TeamTask] = Field(default_factory=list)
+    open_questions: int = 0
+    contract_changes: int = 0
+    decisions: int = 0
+
+
 FloorEvent = Annotated[
     RunStarted
     | RunFinished
@@ -144,7 +191,9 @@ FloorEvent = Annotated[
     | NoteAdded
     | ApprovalPending
     | ApprovalResolved
-    | TranscriptTick,
+    | TranscriptTick
+    | TeamEvent
+    | TeamUpdate,
     Field(discriminator="kind"),
 ]
 

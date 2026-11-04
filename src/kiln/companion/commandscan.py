@@ -101,6 +101,14 @@ _DESTRUCTIVE = [
     ),
     re.compile(r"\b(diskpart|bcdedit|shutdown)\b", re.I),
     re.compile(r"\breg\s+delete\s+hk(lm|cu)\b", re.I),
+    # git commands that throw away uncommitted work across the whole tree —
+    # with two developers in one workspace that is the teammate's work too
+    re.compile(r"\bgit\s+reset\s+(\S+\s+)*--hard\b", re.I),
+    re.compile(r"\bgit\s+clean\s+(\S+\s+)*-\w*f", re.I),
+    re.compile(r"\bgit\s+(checkout|restore)\s+(\S+\s+)*(--\s+)?\.(\s|$)", re.I),
+    # bare `git stash` / push / save / drop / clear hide or delete work;
+    # list, show, pop and apply do not
+    re.compile(r"\bgit\s+stash(\s+(push|save|drop|clear)\b.*|\s+-\S+.*|\s*)$", re.I),
 ]
 
 _SEPARATORS = {"&&", "||", "|", ";", "&", "\n"}
@@ -294,6 +302,101 @@ def _classify(text: str, tokens: list[str], head: str) -> tuple[Kind, bool]:
         or (len(args) == 1 and args[0] in ("--version", "-v", "-V", "version"))
     )
     return "run", low
+
+
+_REDIRECT = re.compile(r"^(\d|\*|&)?>>?(.*)$")
+_DISCARD = {"/dev/null", "$null", "nul", "&1", "&2", ""}
+_REMOVE_OR_MOVE = {
+    "rm", "del", "erase", "rd", "rmdir", "unlink", "remove-item", "ri",
+    "mv", "move", "move-item", "mi", "ren", "rename", "rename-item",
+}  # fmt: skip
+_COPY = {"cp", "copy", "copy-item", "cpi", "xcopy", "robocopy"}
+_WRITE_FIRST = {
+    "touch", "new-item", "ni", "set-content", "sc", "add-content", "ac",
+    "out-file", "truncate",
+}  # fmt: skip
+_TEE = {"tee", "tee-object"}
+_PATH_PARAMS = {"-path", "-literalpath", "-filepath", "-destination", "-target"}
+
+
+def _resolvable(token: str) -> bool:
+    """A literal path we can check; globs and variables are left to review."""
+    return bool(token) and not any(ch in token for ch in "*?$%`{}")
+
+
+def _positional(args: list[str], shell_kind: str) -> list[str]:
+    out = []
+    for arg in args:
+        if arg.startswith("-"):
+            continue
+        if shell_kind in ("cmd", "powershell") and arg.startswith("/") and len(arg) <= 3:
+            continue  # cmd-style switches: /s /q /y
+        out.append(arg)
+    return out
+
+
+def write_targets(command: str, shell_kind: str = "posix") -> list[str]:
+    """Literal paths a command line would create, change, move or delete.
+
+    Covers redirections (`>`, `>>`, `2>`, `*>`, `tee`) and the common file
+    commands of POSIX shells, cmd and PowerShell. Conservative on purpose:
+    anything it cannot read literally (globs, variables) is left out, so the
+    preflight never refuses a command it does not understand — the approval
+    prompt and the after-run change check still apply to those.
+    """
+    parts, _ = _split(command, shell_kind)
+    targets: list[str] = []
+
+    def add(token: str) -> None:
+        token = token.strip().strip("'\"")
+        if token.lower() not in _DISCARD and _resolvable(token):
+            targets.append(token)
+
+    for part in parts:
+        tokens = _tokens(part, shell_kind)
+        words: list[str] = []
+        index = 0
+        while index < len(tokens):
+            match = _REDIRECT.match(tokens[index])
+            if match:
+                attached = match.group(2)
+                if attached:
+                    add(attached)
+                elif index + 1 < len(tokens):
+                    add(tokens[index + 1])
+                    index += 1
+            else:
+                words.append(tokens[index])
+            index += 1
+        while words and _head(words[0]) in ("sudo", "time", "nohup", "&", "command"):
+            words = words[1:]
+        if not words:
+            continue
+        head = _head(words[0])
+        args = words[1:]
+        lowered = [a.lower() for a in args]
+        named = [args[i + 1] for i, a in enumerate(lowered[:-1]) if a in _PATH_PARAMS]
+        positional = _positional(args, shell_kind)
+        if head in _REMOVE_OR_MOVE:
+            for token in named or positional:
+                add(token)
+        elif head in _COPY:
+            if named:
+                add(named[-1])
+            elif len(positional) >= 2:
+                add(positional[-1])
+        elif head in _WRITE_FIRST:
+            if named:
+                add(named[0])
+            elif positional:
+                add(positional[0])
+        elif head in _TEE:
+            for token in named or positional:
+                add(token)
+        elif head == "sed" and any(a.startswith("-i") for a in lowered):
+            if positional:
+                add(positional[-1])
+    return targets
 
 
 def scan_command(command: str, shell_kind: str = "posix") -> Scan:

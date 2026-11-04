@@ -1,7 +1,6 @@
 from kiln.agents.definitions import DEFINITIONS, definition_for, may_write, system_prompt_for
 from kiln.agents.roles import Role
 from kiln.agents.skills import (
-    FRAMEWORK_SKILL_ROLES,
     PROD_OPS_ROLES,
     SECURITY_ROLES,
     SKILL_CATALOG,

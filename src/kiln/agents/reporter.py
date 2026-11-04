@@ -79,7 +79,16 @@ def _body(
     usage: dict,
     opening: str,
     review: ReviewVerdict | None = None,
+    run_notes: list[str] | None = None,
 ) -> str:
+    notes = ""
+    if run_notes:
+        notes = (
+            "\n\n<run_notes>\nWhat went wrong during the build and how the team "
+            "recovered (report each one):\n"
+            + "\n".join(f"- {note}" for note in run_notes)
+            + "\n</run_notes>"
+        )
     return (
         f"{opening}\n\n"
         f"<spec>\n{spec.model_dump_json(indent=2)}\n</spec>\n\n"
@@ -88,6 +97,7 @@ def _body(
         f"<test_report>\n{_test_report_block(report)}\n</test_report>\n\n"
         f"<review>\n{_review_block(review)}\n</review>\n\n"
         f"<usage>\n{usage}\n</usage>"
+        f"{notes}"
     )
 
 
@@ -99,6 +109,7 @@ def _messages(
     usage: dict,
     error: str | None,
     review: ReviewVerdict | None = None,
+    run_notes: list[str] | None = None,
 ) -> list[dict[str, str]]:
     user = _body(
         spec,
@@ -109,6 +120,7 @@ def _messages(
         "Write the README, the run summary, and the cost report for this run. "
         "Answer with the bundle JSON only.",
         review=review,
+        run_notes=run_notes,
     )
     if error is not None:
         user += (
@@ -140,17 +152,21 @@ def run(
     report: TestReport,
     usage: dict,
     review: ReviewVerdict | None = None,
+    run_notes: list[str] | None = None,
 ) -> ReportBundle:
     """Turn run artifacts into a validated bundle. One retry with the error shown."""
     try:
         return _attempt(
-            gateway, _messages(spec, tasks, worker_results, report, usage, None, review)
+            gateway,
+            _messages(spec, tasks, worker_results, report, usage, None, review, run_notes),
         )
     except ValidationError as first:
         try:
             return _attempt(
                 gateway,
-                _messages(spec, tasks, worker_results, report, usage, str(first), review),
+                _messages(
+                    spec, tasks, worker_results, report, usage, str(first), review, run_notes
+                ),
             )
         except ValidationError as second:
             raise ReporterError(
@@ -169,6 +185,7 @@ async def run_agentic(
     transcript: TranscriptLog | None = None,
     agent_id: str | None = None,
     review: ReviewVerdict | None = None,
+    run_notes: list[str] | None = None,
 ) -> ReportBundle:
     """Verification pass: the reporter reads (never writes) before it claims.
 
@@ -200,6 +217,7 @@ async def run_agentic(
         "handoffs, contract routes with no implementation. When the three "
         "documents are ready, call submit_result with the bundle.",
         review=review,
+        run_notes=run_notes,
     )
     settings = gateway.settings
     try:

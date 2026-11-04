@@ -12,6 +12,8 @@ planner's contract is shown so tests target the routes, modules and element
 ids the workers are told to build.
 """
 
+import re
+
 from pydantic import ValidationError
 
 from kiln.agents.definitions import definition_for, system_prompt_for
@@ -26,6 +28,40 @@ from kiln.schemas.tasks import Contract
 
 class TestAuthorError(RuntimeError):
     """The test author could not produce a valid suite."""
+
+
+_TEST_PATH = re.compile(r"(?<![\w./-])((?:[\w.-]+/)*tests?/[\w./-]+\.\w+)")
+
+
+def align_oracles(spec: Spec, suite: TestSuite) -> tuple[Spec, list[str]]:
+    """Point each criterion's oracle at a test file that exists.
+
+    The spec names an oracle file before the suite is written, and the test
+    author may choose another name: run-aa748f20's spec said
+    ``tests/test_health.py``, the suite wrote ``tests/test_embed_health.py``,
+    and a developer read the missing file. A named file the suite lacks is
+    replaced by the suite file covering that criterion (unchanged when none or
+    several do — then the note says so). Returns the spec and what changed.
+    """
+    paths = {file.path for file in suite.files}
+    criteria = []
+    notes: list[str] = []
+    for criterion in spec.acceptance_criteria:
+        oracle = criterion.oracle
+        for named in dict.fromkeys(_TEST_PATH.findall(oracle)):
+            if named in paths:
+                continue
+            covering = [file.path for file in suite.files if criterion.id in file.covers]
+            if len(covering) == 1:
+                oracle = oracle.replace(named, covering[0])
+                notes.append(f"{criterion.id}: oracle {named} → {covering[0]} (the file the suite wrote)")
+            else:
+                found = ", ".join(covering) or "no file"
+                notes.append(f"{criterion.id}: oracle names {named}, which the suite lacks (covered by {found})")
+        criteria.append(criterion if oracle == criterion.oracle else criterion.model_copy(update={"oracle": oracle}))
+    if not notes:
+        return spec, []
+    return spec.model_copy(update={"acceptance_criteria": criteria}), notes
 
 
 def _system_prompt(spec: Spec, *, ui_product: bool = False, prod_ops: bool = False, security: bool = False, extra_skills: tuple[str, ...] = ()) -> str:

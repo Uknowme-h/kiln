@@ -125,7 +125,7 @@ def test_write_then_read_round_trips_inside_the_workspace(executor):
 def test_paths_cannot_escape_the_workspace(executor):
     agent = _worker(["."])
     executor.execute("claim_scope", {"owned_paths": ["."]}, agent)
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="must stay inside the workspace"):
         executor.execute("write_file", {"path": "../outside.txt", "content": "x"}, agent)
 
 

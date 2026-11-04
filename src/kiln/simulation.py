@@ -417,7 +417,7 @@ class _UserPrompt(ApprovalPrompt):
         self.ctx.user_asked.append(request.action)
         return Reply(True, "once")
 
-    def ask_questions(self, agent_label, questions):
+    def ask_questions(self, agent_label, questions, timeout=None):
         self.ctx.user_asked.append("question")
         return [[] for _ in questions]
 

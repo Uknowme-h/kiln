@@ -17,6 +17,7 @@ from kiln.agents.skills import (
     SECURITY_ROLES,
     UI_PRODUCT_ROLES,
     load_skill,
+    skill_index_block,
 )
 from kiln.permissions import Ruleset, role_rules
 
@@ -33,6 +34,11 @@ DEV_TOOLS = (
     "web_fetch",
     "web_search",
     "list_peers",
+    "notify_peer",
+    "ask_peer",
+    "request_files",
+    "propose_contract_change",
+    "escalate",
     "skill",
     "spawn_explore",
     "todo_write",
@@ -49,6 +55,7 @@ FIX_TOOLS = (
     "edit_file",
     "shell",
     "list_peers",
+    "escalate",
     "skill",
     "spawn_explore",
     "todo_write",
@@ -125,7 +132,9 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         output_guidance=(
             "Plan the whole spec when it fits one run; defer acceptance "
             "criteria (the `deferred` list) only when it genuinely cannot, and "
-            "never shrink the build to a demo. Prefer fewer sharp tasks. "
+            "never shrink the build to a demo. Two developers build in parallel: "
+            "vertical feature slices, interfaces stubbed by the scaffold, "
+            "depends_on for hard dependencies only. Prefer fewer sharp tasks. "
             "Non-overlapping owned_paths. Each description: 2–4 short lines "
             "(done-when, files, stubs/ids, must-not). plan.md = seams/schema/"
             "task table (+ deferred backlog if any), not a route dump. UI: "
@@ -194,6 +203,25 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
             "gaps — an empty list is valid only when those claims are met."
         ),
     ),
+    Role.SUPERVISOR: RoleDefinition(
+        role=Role.SUPERVISOR,
+        label="Lena Lead",
+        color="#e0af68",
+        prompt="supervisor",
+        # No tools of its own: one structured decision per escalation. The
+        # orchestrator asks the user, amends the plan or runs an install on
+        # its behalf, after validating the decision.
+        tools=(),
+        permissions=role_rules(),
+        max_steps=1,
+        output_guidance=(
+            "One decision per escalation. Prefer answering from the spec, discovery "
+            "and plan; ask the user only what those genuinely leave open, with 2-5 "
+            "options and a recommended default. Amend the plan only for structure "
+            "(split, add a helper task, fix a dependency, reassign) — never cut scope. "
+            "Keep the message to the developer short and actionable."
+        ),
+    ),
     Role.REPORTER: RoleDefinition(
         role=Role.REPORTER,
         label="Rosa Reporter",
@@ -225,6 +253,8 @@ def system_prompt_for(
     prod_ops: bool = False,
     security: bool = False,
     extra_skills: tuple[str, ...] = (),
+    skill_mode: str = "embed",
+    required_skills: tuple[str, ...] = (),
 ) -> str:
     """The role's system prompt with its output guidance appended.
 
@@ -238,12 +268,42 @@ def system_prompt_for(
     frameworks (framework + quality packs, via ``skills.resolve_skills``). The
     three booleans stay for the heuristic product skills; the tuple adds the
     framework/quality packs without changing the boolean call sites.
+
+    ``skill_mode="index"`` is for agents that have the ``skill`` tool: the
+    same selection becomes an on-demand catalogue (recommended / required
+    markers) instead of embedded packs. Tool-less roles keep ``"embed"``.
     """
     definition = definition_for(role)
     base = load_prompt(definition.prompt)
     parts = [base]
     if definition.output_guidance:
         parts.append(definition.output_guidance)
+    if skill_mode == "index":
+        recommended: list[str] = []
+        if ui_product and role.value in UI_PRODUCT_ROLES:
+            recommended.append("ui_product")
+        if prod_ops and role.value in PROD_OPS_ROLES:
+            recommended.append("prod_ops")
+        if security and role.value in SECURITY_ROLES:
+            recommended.append("security")
+        recommended.extend(extra_skills)
+        parts.append(skill_index_block(tuple(recommended), tuple(required_skills)))
+        # Required packs are embedded, not loaded on demand: each load cost a
+        # full turn (the whole brief re-sent) and was lost at every compaction,
+        # so run-aa748f20's Dev A loaded the same two packs seven times. The
+        # system prompt survives compaction.
+        bodies = []
+        for name in dict.fromkeys(required_skills):
+            try:
+                bodies.append(f"### skill: {name}\n{load_skill(name).strip()}")
+            except (FileNotFoundError, ValueError):
+                continue
+        if bodies:
+            parts.append(
+                "Required skills for this task (already loaded — follow them; do not call "
+                "the skill tool for these):\n\n" + "\n\n".join(bodies)
+            )
+        return "\n\n".join(parts)
     if ui_product and role.value in UI_PRODUCT_ROLES:
         parts.append(load_skill("ui_product"))
     if prod_ops and role.value in PROD_OPS_ROLES:

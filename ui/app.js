@@ -344,12 +344,94 @@ function realRunLive() {
   return !!activeRun && liveRunId === activeRun.run_id;
 }
 
-function log(text, you) {
+// `kind`: true / "you" for the user's own notes, "team" for the developers
+// talking, "lead" for the tech lead's escalations and decisions
+function log(text, kind) {
   const li = document.createElement("li");
   li.textContent = text;
-  if (you) li.className = "you";
+  if (kind) li.className = kind === true ? "you" : kind;
   logEl.prepend(li);
   while (logEl.children.length > 60) logEl.lastChild.remove();
+}
+
+// ── the team panel: two developers, their tasks, the lead ──
+const teamEmptyEl = document.getElementById("team-empty");
+const teamLanesEl = document.getElementById("team-lanes");
+const teamTasksEl = document.getElementById("team-tasks");
+const teamMetaEl = document.getElementById("team-meta");
+const handoffNotesWrap = document.getElementById("handoff-notes-wrap");
+const handoffNotesEl = document.getElementById("handoff-notes");
+const TEAM_ICONS = {
+  note: "✎", question: "?", answer: "↩", checkout: "⇆", contract: "§",
+  status: "•", escalation: "⚑", decision: "★",
+};
+
+function who(id) {
+  const a = scene.agent(id);
+  if (a) return a.label;
+  if (id === "kiln") return "Kiln";
+  if (id === "supervisor") return "Lena Lead";
+  return id;
+}
+
+function renderTeam(ev) {
+  const lanes = ev.lanes || [];
+  teamEmptyEl.classList.toggle("hidden", lanes.length > 0);
+  teamLanesEl.replaceChildren(...lanes.map((lane) => {
+    const div = document.createElement("div");
+    div.className = `team-lane${lane.current ? " busy" : ""}${lane.paused ? " paused" : ""}`;
+    const name = document.createElement("div");
+    const strong = document.createElement("span");
+    strong.className = "who";
+    strong.textContent = lane.label;
+    name.append(strong);
+    if (lane.focus && lane.focus !== "shared" && !lane.label.includes(lane.focus)) {
+      const focus = document.createElement("span");
+      focus.className = "focus";
+      focus.textContent = lane.focus;
+      name.append(focus);
+    }
+    const now = document.createElement("div");
+    now.className = "now";
+    now.textContent = lane.current
+      ? `${lane.paused ? "paused on " : "on "}${lane.current} — ${lane.current_title || ""}`
+      : "between tasks";
+    div.append(name, now);
+    if ((lane.checked_out || []).length) {
+      const files = document.createElement("div");
+      files.className = "files";
+      files.textContent = `editing shared: ${lane.checked_out.join(", ")}`;
+      div.append(files);
+    }
+    div.addEventListener("click", () => openDrawer(lane.agent_id));
+    div.title = "open this developer's work";
+    return div;
+  }));
+  teamTasksEl.replaceChildren(...(ev.tasks || []).map((task) => {
+    const li = document.createElement("li");
+    const st = document.createElement("span");
+    st.className = `st st-${task.status}`;
+    st.textContent = task.status;
+    const title = document.createElement("span");
+    title.textContent = `${task.id} ${task.title}`;
+    const owner = document.createElement("span");
+    owner.className = "owner";
+    owner.textContent = (who(task.agent_id) || "").replace(/\s*\(.*\)$/, "");
+    li.append(st, title, owner);
+    return li;
+  }));
+  const meta = [];
+  if (ev.open_questions) meta.push(`${ev.open_questions} open question${ev.open_questions > 1 ? "s" : ""}`);
+  if (ev.contract_changes) meta.push(`${ev.contract_changes} contract change${ev.contract_changes > 1 ? "s" : ""}`);
+  if (ev.decisions) meta.push(`${ev.decisions} lead decision${ev.decisions > 1 ? "s" : ""}`);
+  teamMetaEl.textContent = meta.join(" · ");
+}
+
+function resetTeam() {
+  teamEmptyEl.classList.remove("hidden");
+  teamLanesEl.replaceChildren();
+  teamTasksEl.replaceChildren();
+  teamMetaEl.textContent = "";
 }
 
 function setConn(state) {
@@ -375,6 +457,15 @@ function showHandoff(ev) {
   handoffStats.replaceChildren(...rows.map((row) => {
     const li = document.createElement("li");
     li.textContent = row;
+    return li;
+  }));
+  // what went wrong and how the team recovered: failed tasks, repairs,
+  // contract changes, the tech lead's decisions
+  const notes = ev.notes || [];
+  handoffNotesWrap.classList.toggle("hidden", notes.length === 0);
+  handoffNotesEl.replaceChildren(...notes.map((text) => {
+    const li = document.createElement("li");
+    li.textContent = text;
     return li;
   }));
   setConsole("finished");
@@ -547,6 +638,7 @@ function handle(ev) {
       closeDrawer();
       resetPeople();
       resetApprovals();
+      resetTeam();
       // a real run keeps polling so a mid-build disconnect shows up on the
       // floor; a rehearsal has nothing to poll
       if (!realRunLive()) stopPolling();
@@ -583,16 +675,23 @@ function handle(ev) {
       else if (id === "reporter" && status === "working") scene.goStation("reporter", "printer");
       else if (id === "reporter" && status === "done") scene.goHome("reporter");
       else if (id === "fixer" && status === "done") scene.goHome("fixer");
-      if (ev.detail) log(`${ev.agent.label.split(" ")[0]} ${ev.detail}`);
+      // the lead walks back to the meeting table once a decision is made
+      else if (id === "supervisor" && (status === "done" || status === "stuck")) scene.goHome("supervisor");
+      if (ev.detail) {
+        const name = /^Dev [A-Z]/.test(ev.agent.label) ? ev.agent.label.slice(0, 5) : ev.agent.label.split(" ")[0];
+        log(`${name} ${ev.detail}`, id === "supervisor" ? "lead" : undefined);
+      }
       break;
     }
     case "task_assigned": {
       const wid = ev.agent_id;
       const n = /^worker-(\d+)$/.exec(wid);
+      // keep the label the developer's own status events set ("Dev A (backend)")
+      const known = scene.agent(wid);
       scene.ensureAgent({
         id: wid,
         role: "worker",
-        label: n ? `Worker ${n[1]}` : wid,
+        label: known ? known.label : n ? `Dev ${String.fromCharCode(64 + Number(n[1]))}` : wid,
       });
       scene.setTask(wid, ev.task.title);
       scene.pinTask(ev.task.id, wid);
@@ -671,6 +770,23 @@ function handle(ev) {
       log(ev.approved ? "approval granted" : "approval refused");
       note(ev.agent_id, ev.approved ? "you approved it" : "you refused it");
       break;
+    case "team_event": {
+      // the developers (and the lead) talking: an envelope between desks,
+      // a log line, and both people's activity
+      scene.message(ev.from_agent, ev.to_agent);
+      if (ev.category === "escalation" && /^worker-\d+$|^fixer$/.test(ev.from_agent)) {
+        scene.goHelp("supervisor", ev.from_agent); // the lead walks over to listen
+      }
+      const icon = TEAM_ICONS[ev.category] || "•";
+      const lead = ev.category === "escalation" || ev.category === "decision";
+      log(`${icon} ${who(ev.from_agent)} → ${who(ev.to_agent)}: ${ev.text}`, lead ? "lead" : "team");
+      note(ev.from_agent, `${icon} to ${who(ev.to_agent)}: ${ev.text}`);
+      note(ev.to_agent, `${icon} from ${who(ev.from_agent)}: ${ev.text}`);
+      break;
+    }
+    case "team_update":
+      renderTeam(ev);
+      break;
     case "transcript_tick": {
       // the one-line summary feeds the activity list; an open drawer on this
       // agent (or its sub-agents) pulls the full entries
@@ -691,6 +807,7 @@ let drawerOpener = null; // focus goes back here when the drawer closes
 const ROLE_NAMES = {
   requirements: "Requirements analyst", planner: "Planner", test_author: "Test author",
   worker: "Developer", fixer: "Fixer", reviewer: "Reviewer", reporter: "Reporter",
+  supervisor: "Tech lead",
 };
 const STATUS_COLORS = {
   idle: "#a199ab", thinking: "#4fa3af", working: "#d8a93c", stuck: "#e06a62", done: "#5fb07f",

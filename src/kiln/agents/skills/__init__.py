@@ -239,6 +239,37 @@ def handle_skill_tool(args: dict) -> str:
         return str(exc)
 
 
+def skill_index_block(
+    recommended: tuple[str, ...] = (), required: tuple[str, ...] = ()
+) -> str:
+    """The on-demand skill catalogue for agents that have the ``skill`` tool.
+
+    Embedding every pack in the system prompt paid for ~10k chars of rules on
+    every turn whether the task touched them or not. Agents with the ``skill``
+    tool get names, one-line descriptions and relevance markers instead, and
+    load a pack when their work reaches that area (OpenCode / Claude Code
+    pattern). Required packs are the task's ``required_skills``.
+    """
+    catalog = _effective_catalog()
+    marked: list[str] = []
+    seen: set[str] = set()
+    for name in (*required, *recommended):
+        if name in catalog and name not in seen:
+            seen.add(name)
+            tag = "required — already loaded below" if name in required else "recommended"
+            marked.append(f"- {name} ({tag}): {catalog[name]}")
+    others = [f"- {name}: {catalog[name]}" for name in sorted(catalog) if name not in seen]
+    lines = [
+        "Skills (load with the skill tool when your work reaches that area; "
+        "loading costs one call, so load only what this task needs):"
+    ]
+    lines += marked
+    if others:
+        lines.append("Also available:")
+        lines += others
+    return "\n".join(lines)
+
+
 def wrap_call_tool_with_skills(call_tool):
     """Return an async call_tool that serves ``skill`` locally, else delegates."""
 

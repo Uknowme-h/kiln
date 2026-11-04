@@ -427,8 +427,18 @@ def test_the_layer_suite_state_feeds_the_next_layer(monkeypatch):
     assert "regressions: none" in feed
 
 
-def test_a_failed_smoke_check_ends_the_run_honestly(monkeypatch):
+def test_a_failed_smoke_check_gets_one_repair_then_the_suite_decides(monkeypatch):
+    """A syntax error used to end the run on the spot. Now the developer who
+    wrote the files gets one short repair pass; a still-failing check is
+    recorded and the build continues — the suite gives the honest verdict."""
     _agents(monkeypatch)
+    built = []
+
+    def worker_spy(gw, task, *a, **k):
+        built.append(task.id)
+        return _work(task.id, task.owned_paths[0])
+
+    monkeypatch.setattr(orchestrator.worker, "run", worker_spy)
 
     class BrokenSmokeRegistry(FakeRegistry):
         async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
@@ -437,17 +447,18 @@ def test_a_failed_smoke_check_ends_the_run_honestly(monkeypatch):
                 raise RuntimeError("SyntaxError: invalid syntax")
             return await super().call_tool(run_id, tool, tool_input, timeout, agent)
 
-    registry = BrokenSmokeRegistry([])
+    registry = BrokenSmokeRegistry([_report(passed=1, failed=1)] * 6)
     events = Collector()
     orch = _orch(registry, events)
     assert asyncio.run(orch.run("run-1", "a to-do app", [])) is False
-    kinds = [event.kind for event in events.events]
-    assert kinds[-1] == "run_finished"
-    assert events.events[-1].green is False
-    # the run stopped at the smoke check: no suite ran, no layer 2 was built
+    assert events.events[-1].kind == "run_finished"
+    # each task was built, then repaired once after its smoke check failed
+    assert built == ["t1", "t1", "t2", "t2"]
     order = [tool for tool, _ in registry.calls]
-    assert "run_tests" not in order
-    assert "smoke_check" in order
+    assert order.count("smoke_check") == 4  # check, re-check after the repair, per task
+    assert "run_tests" in order  # the suite still decided
+    assert any("smoke check still fails" in note for note in orch._run_notes)
+    assert "README.md" in [inp.get("path") for tool, inp in registry.calls if tool == "write_file"]
 
 
 def test_a_declined_smoke_check_keeps_the_run_moving(monkeypatch):
@@ -514,18 +525,18 @@ def test_agentic_layers_pass_dependency_references_not_contents(monkeypatch):
 
 
 def test_a_failed_worker_never_leaves_its_sibling_running_detached(monkeypatch):
-    """gather() without return_exceptions surfaced the first failure while the
-    sibling worker kept running (holding its lease, calling tools) into a run
-    that was already tearing down. Every worker must finish and release first,
-    and the failure must name the worker and task — not the reporter. A task
-    that delivers nothing gets one fresh worker before the run ends."""
+    """A failing developer must not leave its sibling running detached or end
+    the build: the task is retried, failed over to the teammate, then recorded
+    as not delivered — while the sibling's work is kept and every lease is
+    released."""
     from kiln.agents.worker import WorkerError
-    from kiln.graph.orchestrator import LoopError
 
     finished = []
+    attempts = []
 
     async def fake_run_agentic(gw, task, spec, call_tool, **kwargs):
         if task.id == "a":
+            attempts.append(kwargs.get("agent_id"))
             raise WorkerError("step cap (30) reached without a valid submit_result")
         await asyncio.sleep(0.2)
         finished.append(task.id)
@@ -540,13 +551,14 @@ def test_a_failed_worker_never_leaves_its_sibling_running_detached(monkeypatch):
         Task(id="a", title="Backend seams", description="x", owned_paths=["a.py"]),
         Task(id="b", title="Frontend shell", description="y", owned_paths=["b.py"]),
     ]
-    with pytest.raises(
-        LoopError, match=r"worker-\d+ \(Backend seams\) failed after 2 attempts: step cap"
-    ):
-        asyncio.run(orch._run_layer("run-1", layer, 0, SPEC, SUITE, {}, GRAPH, ""))
-    assert finished == ["b"]  # the sibling ran to completion before the failure surfaced
-    # a's first worker, a's retry, and b — every lease released
-    assert [tool for tool, _ in registry.calls].count("release_scope") == 3
+    results = asyncio.run(orch._run_layer("run-1", layer, 0, SPEC, SUITE, {}, GRAPH, ""))
+    assert [r.task_id for r in results] == ["b"]  # the sibling's work is kept
+    assert finished == ["b"]
+    # a: first attempt + same-lane retry on one developer, then one failover attempt
+    assert len(attempts) == 3 and len(set(attempts)) == 2
+    assert "a" in orch._failed_tasks and "step cap" in orch._failed_tasks["a"]
+    claims = [tool for tool, _ in registry.calls].count("claim_scope")
+    assert [tool for tool, _ in registry.calls].count("release_scope") == claims == 4
 
 
 # ── discovery without a mechanical readiness gate; brief review (item 13) ──

@@ -222,11 +222,15 @@ class ApprovalPrompt:
         except (EOFError, KeyboardInterrupt):
             return ""
 
-    def ask_questions(self, agent_label: str, questions: list[Question]) -> list[list[str]]:
+    def ask_questions(
+        self, agent_label: str, questions: list[Question], timeout: float | None = None
+    ) -> list[list[str]]:
         """Put the agent's questions to the user; returns one answer list per question.
 
         With ``remote=True``, the web floor can submit all answers at once and
         race the terminal. Terminal mode still answers one question at a time.
+        ``timeout`` (remote mode): unanswered questions count as skipped after
+        that many seconds, releasing the prompt for the approvals queued behind.
         """
         if not self.interactive and not self._remote:
             return [[] for _ in questions]
@@ -244,7 +248,7 @@ class ApprovalPrompt:
                     self._out("   type your answer (blank to skip)")
             if self._remote:
                 self._out("   (or answer on the web floor)")
-                return self._wait_for_question_answers(questions)
+                return self._wait_for_question_answers(questions, timeout)
             answers: list[list[str]] = []
             for question in questions:
                 answers.append(self._resolve_answer(self._next_line(), question))
@@ -264,12 +268,13 @@ class ApprovalPrompt:
         return out
 
     def _wait_for_question_answers(
-        self, questions: list[Question]
+        self, questions: list[Question], timeout: float | None = None
     ) -> list[list[str]]:
         """Race terminal (per-question) against a full remote answer payload."""
         self._remote_answers = None
         self._waiting_questions.set()
         collected: list[list[str]] = []
+        deadline = time.monotonic() + timeout if timeout else None
         try:
             if self.interactive:
                 self._ensure_reader()
@@ -279,6 +284,9 @@ class ApprovalPrompt:
                     if not self._waiting_questions.is_set():
                         self._out("   …answered from the web floor")
                         return self._pad_remote_answers(questions, self._remote_answers)
+                    if deadline is not None and time.monotonic() >= deadline:
+                        self._out("   …no answer in time; the team goes with its recommendation")
+                        return collected + [[] for _ in questions[len(collected):]]
                     if not self.interactive:
                         # No stdin — park until the floor answers (same as shell).
                         time.sleep(0.1)

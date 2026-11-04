@@ -6,7 +6,7 @@ from kiln.agents.briefing import (
     product_briefing_blocks,
     spec_excerpt_for_task,
 )
-from kiln.schemas.spec import AcceptanceCriterion, FilePlanEntry, Spec, UserStory
+from kiln.schemas.spec import Spec
 from kiln.schemas.tasks import Task
 
 

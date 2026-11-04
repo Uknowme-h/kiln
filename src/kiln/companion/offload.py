@@ -25,6 +25,14 @@ SKIP_OFFLOAD_TOOLS = frozenset(
         "set_workspace",
         "probe_stack",
         "read_file",
+        # Machine-readable results Kiln itself parses. An offload stub is not
+        # JSON: run-aa748f20's 28k-char test report was stubbed, the parse
+        # failed, and every suite run counted as "could not run".
+        "run_tests",
+        "served_ui_audit",
+        "runtime_smoke",
+        "ensure_browser_runtime",
+        "browser_verify",
     }
 )
 
