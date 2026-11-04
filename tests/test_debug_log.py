@@ -83,3 +83,22 @@ def test_usage_summary_includes_by_agent():
     )
     summary = usage.summary()
     assert summary["by_agent"]["planner"]["calls"] == 1
+
+
+def test_usage_summary_counts_fallback_calls():
+    """run-9f836de2: 86% of calls were on the fallback route with no signal.
+    The summary must expose the count so the cost report can name the lever."""
+    usage = UsageLog()
+
+    def route(fallback):
+        return Route(
+            role=Role.WORKER, provider="meta", model="spark",
+            base_url="x", api_key="k", fallback=fallback,
+        )
+
+    usage.record(role=Role.WORKER, route=route(True), prompt_tokens=1, completion_tokens=1)
+    usage.record(role=Role.WORKER, route=route(True), prompt_tokens=1, completion_tokens=1)
+    usage.record(role=Role.WORKER, route=route(False), prompt_tokens=1, completion_tokens=1)
+    summary = usage.summary()
+    assert summary["calls"] == 3
+    assert summary["fallback_calls"] == 2

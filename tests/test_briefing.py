@@ -72,7 +72,8 @@ def test_design_and_discovery_injected():
     assert "coral" in blocks
     assert "<discovery>" in blocks
     assert "real sessions" in blocks
-    assert "Extra noise" not in blocks
+    # discovery is a free-form decisions log: no heading is filtered away
+    assert "Extra noise" in blocks
 
 
 def test_discovery_digest_fallback_without_headings():

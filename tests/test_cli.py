@@ -2,8 +2,8 @@ import asyncio
 import json
 
 from kiln.companion import client
-from kiln.companion.cli import _looks_like_kiln_repo
 from kiln.companion.executor import Executor
+from kiln.companion.executor import looks_like_kiln_repo as _looks_like_kiln_repo
 
 
 def test_a_plain_workspace_is_fine(tmp_path):

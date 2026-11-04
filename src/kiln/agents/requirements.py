@@ -14,6 +14,7 @@ from collections.abc import Awaitable, Callable
 
 from pydantic import ValidationError
 
+from kiln.agents.briefing import existing_workspace_block
 from kiln.agents.definitions import definition_for, system_prompt_for
 from kiln.agents.roles import Role
 from kiln.agents.skills import (
@@ -32,19 +33,33 @@ CallTool = Callable[[str, dict], Awaitable[str]]
 DISCOVERY_DOC = "docs/discovery.md"
 
 # Clarify/research turns: ask_user topics are model-chosen (prompt-level);
-# the tool-loop cap bounds the phase — research may need search → fetch → write.
-MAX_TOOL_ROUNDS = 4
+# the tool-loop cap bounds the phase — a look at an existing workspace, research
+# (search → fetch), up to two question rounds, and the discovery write.
+MAX_TOOL_ROUNDS = 6
+
+OPENING = (
+    "Understand this brief before you specify it. Ask the user only about what "
+    "this specific brief leaves open and research or the workspace cannot "
+    "settle — there is no standard question list, and a brief that already "
+    "answers everything needs no questions. Specify the product the user "
+    "described at the ambition they described; do not assume a first version "
+    "or a reduced scope unless they asked for one. When you have enough, stop "
+    "calling tools — the next turn will ask you for the spec JSON."
+)
 
 
 class RequirementsError(RuntimeError):
     """The analyst could not produce a valid spec."""
 
 
-def _base_messages(idea: str, user_notes: tuple[str, ...]) -> list[dict]:
+def _base_messages(
+    idea: str, user_notes: tuple[str, ...], inventory: list[str] | None = None
+) -> list[dict]:
     idea_block = f"<user_idea>\n{idea}\n</user_idea>"
     if user_notes:
         notes = "\n".join(f"- {note}" for note in user_notes)
         idea_block += f"\n\n<user_notes>\n{notes}\n</user_notes>"
+    idea_block += existing_workspace_block(inventory)
     return [
         {
             "role": "system",
@@ -57,13 +72,7 @@ def _base_messages(idea: str, user_notes: tuple[str, ...]) -> list[dict]:
         },
         {
             "role": "user",
-            "content": (
-                "Clarify anything that changes the first version (API vs UI, "
-                "persistence, accounts, preferred language: python or node), "
-                "using ask_user if needed. When you have enough, stop calling "
-                "tools — the next turn will ask you for the spec JSON.\n\n"
-                + idea_block
-            ),
+            "content": OPENING + "\n\n" + idea_block,
         },
     ]
 
@@ -71,7 +80,10 @@ def _base_messages(idea: str, user_notes: tuple[str, ...]) -> list[dict]:
 def _spec_messages(messages: list[dict], error: str | None) -> list[dict]:
     user = (
         "Write the specification for this product idea now. Answer with the "
-        "spec JSON only. Set stack_id to exactly \"python\" or \"node\"."
+        "spec JSON only. Set stack_id to exactly \"python\" or \"node\", name "
+        "the frameworks (fastapi/flask/django/express/nestjs/vite_react/nextjs), "
+        "and set roots for a multi-root product (an API + a Vite SPA split into "
+        "backend/ + frontend/; nextjs alone may be one root)."
     )
     if error is not None:
         user += (
@@ -93,13 +105,8 @@ def _attempt(gateway: Gateway, messages: list[dict]) -> Spec:
 
 
 async def _clarify(gateway: Gateway, messages: list[dict], call_tool: CallTool) -> list[dict]:
-    """Up to MAX_TOOL_ROUNDS of tool turns: questions, research, discovery file."""
+    """Up to MAX_TOOL_ROUNDS of tool turns: look around, questions, research, discovery file."""
     tools = specs_for(definition_for(Role.REQUIREMENTS).tools)
-    # drop read_file for the clarify phase if the workspace is empty — keep ask/web/write
-    tool_names = tuple(
-        name for name in definition_for(Role.REQUIREMENTS).tools if name != "read_file"
-    )
-    tools = specs_for(tool_names or ("ask_user",))
     working = list(messages)
     for _ in range(MAX_TOOL_ROUNDS):
         completion = await asyncio.to_thread(
@@ -151,10 +158,11 @@ async def run_async(
     *,
     call_tool: CallTool | None = None,
     ask: bool = True,
+    inventory: list[str] | None = None,
 ) -> Spec:
     if not idea.strip():
         raise RequirementsError("a run needs an idea")
-    messages = _base_messages(idea, user_notes)
+    messages = _base_messages(idea, user_notes, inventory)
     if ask and call_tool is not None:
         messages = await _clarify(gateway, messages, call_tool)
     try:

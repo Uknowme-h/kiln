@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from kiln.agents import worker
 from kiln.agents.roles import Role
+from kiln.config import Settings
 from kiln.gateway.client import Completion
 from kiln.schemas.spec import Spec
 from kiln.schemas.suite import TestSuite
@@ -190,3 +191,120 @@ def test_dependency_paths_are_offered_as_references_not_contents():
     assert "read_file" in block
     assert worker._dependency_paths_block([]) == ""
     assert worker._dependency_paths_block(None) == ""
+
+
+# ── agentic prompt is lean (run-9f836de2 prompt bloat, Milestone C) ──
+
+
+def _model_call(name, args, call_id=None):
+    from kiln.gateway.client import ModelToolCall
+
+    return ModelToolCall(
+        id=call_id or f"c-{name}", name=name, arguments=json.dumps(args)
+    )
+
+
+def _turn(*calls, text=""):
+    return Completion(
+        content=text, model="m", prompt_tokens=1, completion_tokens=1,
+        tool_calls=tuple(calls),
+    )
+
+
+class LoopGateway:
+    def __init__(self, script):
+        self.script = list(script)
+        self.seen = []
+        self.settings = Settings(
+            _env_file=None,
+            enable_explore_subagent=False,
+            enable_todo_tool=False,
+            post_edit_diagnostics=False,
+        )
+
+    def complete(self, role, messages, **kwargs):
+        self.seen.append({"messages": list(messages), **kwargs})
+        return self.script.pop(0)
+
+
+def _submit_dev():
+    return {
+        "task_id": "t1",
+        "summary": "done",
+        "files_written": ["app.py"],
+        "what_works": "all",
+        "known_gaps": [],
+    }
+
+
+def test_the_agentic_worker_gets_a_test_digest_not_bodies():
+    """run-9f836de2 burned 3.27M worker prompt tokens; the agentic worker has
+    read_file, so the suite must arrive as paths+ACs to read, not inline bodies."""
+    import asyncio
+
+    gateway = LoopGateway([_turn(_model_call("submit_result", _submit_dev()))])
+
+    async def call_tool(name, args):
+        return "file body"
+
+    big_body = "def test_post():\n    assert True\n" + ("# padding\n" * 500)
+    suite = TestSuite.model_validate(
+        {
+            "spec_title": "Tasks",
+            "files": [{"path": "tests/test_tasks.py", "content": big_body, "covers": ["c1"]}],
+        },
+        context={"criterion_ids": ["c1"]},
+    )
+    asyncio.run(
+        worker.run_agentic(gateway, TASK, SPEC, call_tool, suite=suite)
+    )
+    user = gateway.seen[0]["messages"][1]["content"]
+    assert "tests/test_tasks.py" in user  # the path to read
+    assert "read_file" in user  # the instruction to read it
+    assert "padding" not in user  # the body is NOT inlined
+    assert "covers your task" in user
+
+
+def test_the_agentic_worker_gets_a_spec_excerpt_not_the_whole_spec():
+    import asyncio
+
+    gateway = LoopGateway([_turn(_model_call("submit_result", _submit_dev()))])
+
+    async def call_tool(name, args):
+        return "file body"
+
+    asyncio.run(worker.run_agentic(gateway, TASK, SPEC, call_tool, suite=SUITE))
+    user = gateway.seen[0]["messages"][1]["content"]
+    assert "<spec_excerpt>" in user
+    # the task's AC reaches the prompt, but not the full user-story JSON dump
+    assert "c1" in user
+    assert "user_stories" not in user
+
+
+def test_the_agentic_reminder_uses_a_compact_contract_digest():
+    import asyncio
+
+    from kiln.schemas.tasks import Contract, ContractRoute
+
+    gateway = LoopGateway([_turn(_model_call("submit_result", _submit_dev()))])
+
+    async def call_tool(name, args):
+        return "file body"
+
+    contract = Contract(
+        routes=[ContractRoute(method="POST", path="/tasks", request="x", response="y")],
+        modules=["app.create() -> Flask"],
+        shared_files=["app.py"],
+    )
+    asyncio.run(
+        worker.run_agentic(gateway, TASK, SPEC, call_tool, suite=SUITE, contract=contract)
+    )
+    # the reminder rides the doom-refusal / cap handoff; find it via run_agent_loop's
+    # reminder kwarg is not exposed, so assert the digest helper itself is compact
+    digest = worker._contract_digest(contract)
+    assert "POST /tasks" in digest
+    assert "app.create() -> Flask" in digest
+    assert "scaffold owns: app.py" in digest
+    # far smaller than the pretty JSON (no request/response/indent noise)
+    assert len(digest) < len(contract.model_dump_json(indent=2))
+    assert "request" not in digest and "response" not in digest

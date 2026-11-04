@@ -6,6 +6,8 @@ import json
 import re
 from pathlib import Path
 
+from kiln.product.spa_mount_audit import audit_spa_mount
+
 # Surfaces we know how to check by name in the idea / discovery.
 _KNOWN_PACKAGES: dict[str, tuple[str, ...]] = {
     "excalidraw": ("@excalidraw/excalidraw", "excalidraw"),
@@ -231,6 +233,10 @@ def audit_served_ui(
                     "UI direction was set but no stylesheet (CSS) was found in "
                     "served UI paths"
                 )
+
+    # SPA mount: a routed app shell or page components the entry never reaches
+    # are dead code no API test sees (run-9f836de2 shipped an unmounted App).
+    gaps.extend(audit_spa_mount(root))
 
     # Deduplicate while preserving order
     seen: set[str] = set()

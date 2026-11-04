@@ -80,6 +80,43 @@ def test_hello_without_workspace_leaves_the_run_paired():
     assert client.get(f"/runs/{run_id}").json()["status"] == "disconnected"
 
 
+def test_a_listen_reconnect_mid_run_is_sent_the_locked_folder():
+    """A respawned `listen` companion has no folder; the run already locked one.
+    The server re-locks it first, or every tool fails "workspace not chosen yet"."""
+    client = make_client()
+    created = client.post("/runs", json={"idea": "a to-do app"}).json()
+    code = created["pair_code"]
+    hello = {"type": "hello", "code": code, "workspace": "D:\\work\\todo", "version": "0.1.0"}
+    with client.websocket_connect("/companion/ws") as ws:
+        ws.send_json(hello)
+        assert ws.receive_json()["type"] == "hello_ack"
+
+    with client.websocket_connect("/companion/ws") as ws:
+        ws.send_json({**hello, "workspace": ""})
+        assert ws.receive_json()["type"] == "hello_ack"
+        call = ws.receive_json()
+        assert call["type"] == "tool_call"
+        assert call["tool"] == "set_workspace"
+        assert call["input"] == {"path": "D:\\work\\todo"}
+        ws.send_json({"type": "tool_result", "id": call["id"], "ok": True, "output": "{}"})
+
+
+def test_the_drawer_transcript_includes_an_agents_delegated_work():
+    from kiln.agents.transcript import TranscriptLog
+
+    client = make_client()
+    created = client.post("/runs", json={"idea": "a to-do app"}).json()
+    log = TranscriptLog()
+    log.record("worker-1", "worker", "tool_call", {"name": "shell", "args": {}})
+    log.record("worker-1/explore-1", "worker", "model_call", {"content": "found it"})
+    log.record("worker-10", "worker", "note", {"text": "a different desk"})
+    client.app.state.runs.get_run(created["run_id"]).transcript = log
+
+    data = client.get(f"/runs/{created['run_id']}/transcript?agent=worker-1").json()
+    assert [e["agent_id"] for e in data["entries"]] == ["worker-1", "worker-1/explore-1"]
+    assert "worker-1/explore-1" in data["agents"]
+
+
 def test_a_bad_pair_code_is_refused():
     client = make_client()
     with client.websocket_connect("/companion/ws") as ws:

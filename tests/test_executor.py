@@ -29,6 +29,49 @@ def _worker(owned=("app/",)):
     return AgentScope(id="worker-1", label="Worker 1", role="worker", owned_paths=list(owned))
 
 
+def test_scaffold_framework_template_writes_a_tree(executor):
+    out = executor.execute(
+        "scaffold_framework",
+        {"framework": "fastapi", "root": "backend", "options": {}},
+        agent=_worker(("backend/",)),
+    )
+    assert "scaffolded fastapi" in out
+    main = executor.execute("read_file", {"path": "backend/app/main.py"})
+    assert "include_router" in main
+    assert (executor.root / "backend" / "requirements.txt").is_file()
+
+
+def test_scaffold_framework_refuses_a_dirty_root(executor):
+    executor.execute(
+        "scaffold_framework",
+        {"framework": "fastapi", "root": "backend", "options": {}},
+        agent=_worker(("backend/",)),
+    )
+    # second run without overwrite must refuse: the manifest now exists
+    with pytest.raises(ExecutionError, match="already scaffolded"):
+        executor.execute(
+            "scaffold_framework",
+            {"framework": "fastapi", "root": "backend", "options": {}},
+            agent=_worker(("backend/",)),
+        )
+    # explicit overwrite is allowed
+    out = executor.execute(
+        "scaffold_framework",
+        {"framework": "fastapi", "root": "backend", "options": {"overwrite": True}},
+        agent=_worker(("backend/",)),
+    )
+    assert "scaffolded fastapi" in out
+
+
+def test_scaffold_framework_rejects_an_unknown_framework(executor):
+    with pytest.raises((ExecutionError, ValueError), match="no scaffold recipe"):
+        executor.execute(
+            "scaffold_framework",
+            {"framework": "rails", "root": "api", "options": {}},
+            agent=_worker(("api/",)),
+        )
+
+
 def test_deferred_executor_browses_and_locks_a_workspace(tmp_path):
     nested = tmp_path / "apps" / "demo"
     nested.mkdir(parents=True)
@@ -214,6 +257,28 @@ def test_vendor_deps_downloads_when_docker_sandbox(tmp_path, monkeypatch):
 def test_reading_a_missing_file_is_an_error(executor):
     with pytest.raises(ExecutionError):
         executor.execute("read_file", {"path": "nope.txt"})
+
+
+def test_reading_a_missing_peer_owned_file_is_a_soft_miss_not_an_error(executor):
+    """run-9f836de2: parallel workers crash-looped on reads of files a peer was
+    still writing. A peer-owned path that does not exist yet must come back as
+    guidance, not an ExecutionError."""
+    w2 = AgentScope(id="worker-2", label="Worker 2", role="worker", owned_paths=["backend/auth.py"])
+    executor.execute("claim_scope", {"owned_paths": ["backend/auth.py"], "task": "auth"}, w2)
+    # worker-1 reads worker-2's not-yet-written file: soft miss, names the owner
+    out = executor.execute("read_file", {"path": "backend/auth.py"}, _worker(["backend/"]))
+    assert "does not exist yet" in out
+    assert "Worker 2" in out
+    assert "list_peers" in out or "known_gap" in out
+
+
+def test_reading_a_missing_file_inside_your_own_lease_stays_an_error(executor):
+    """The soft miss is only for *peer* files; a missing file you own yourself
+    is still a plain error (you are the one who should have written it)."""
+    agent = _worker(["app/"])
+    executor.execute("claim_scope", {"owned_paths": ["app/"]}, agent)
+    with pytest.raises(ExecutionError):
+        executor.execute("read_file", {"path": "app/missing.py"}, agent)
 
 
 def test_unknown_tool_is_an_error(executor):

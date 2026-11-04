@@ -111,6 +111,8 @@ class ApprovalPending(BaseModel):
     lines: list[str] = Field(default_factory=list)
     note: str = ""
     allow_run_scope: bool = False
+    # auto-approve resolved it already: log it, do not pop a dialog
+    auto_approved: bool = False
     questions: list[FloorQuestion] = Field(default_factory=list)
 
 
@@ -118,6 +120,7 @@ class ApprovalResolved(BaseModel):
     kind: Literal["approval_resolved"] = "approval_resolved"
     agent_id: str = Field(min_length=1)
     approved: bool
+    auto_approved: bool = False
 
 
 class TranscriptTick(BaseModel):

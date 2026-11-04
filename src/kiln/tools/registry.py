@@ -25,7 +25,9 @@ TOOLS: dict[str, ToolSpec] = {
         ToolSpec(
             "read_file",
             "Read a file in the workspace. Prefer this over shell cat/type. "
-            "Read a file before you edit or overwrite it.",
+            "Read a file before you edit or overwrite it. For a large file, "
+            "read only the lines you need with offset+limit instead of the whole "
+            "file — a full dump stays in your context for the rest of the task.",
             s.ReadFile,
         ),
         ToolSpec(
@@ -55,9 +57,9 @@ TOOLS: dict[str, ToolSpec] = {
         ),
         ToolSpec(
             "ask_user",
-            "Ask the user clarifying questions. Prefer selectable options for "
-            "auth, persistence, integration, stack, and UI direction — never leave "
-            "those open-ended. The user can always type their own answer.",
+            "Ask the user clarifying questions about what the brief genuinely "
+            "leaves open. Prefer selectable options over open-ended questions; "
+            "the user can always type their own answer.",
             s.AskUser,
         ),
         ToolSpec(

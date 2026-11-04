@@ -1,0 +1,45 @@
+# Kiln skill: frontend quality
+
+Apply when the product has a web UI. Complements `ui_product` (which owns
+landing/design tokens); this pack owns accessibility, real content, and the
+mount done-definition.
+
+## Real content, no placeholders
+
+- No lorem ipsum and no placeholder imagery: ban `placehold.co`,
+  `picsum.photos`, `dummyimage.com`. Use real committed assets. Informative
+  images get `alt` describing their purpose in context; decorative images get
+  `alt=""`. Never put essential text only inside an image.
+
+## Accessible forms
+
+- Every input has a visible `<label>` (`htmlFor` in JSX). A placeholder is a
+  hint, never a label. Link errors with `aria-describedby` + `aria-invalid`;
+  on a failed submit, focus the first invalid field. Don't block paste or
+  autofill.
+
+## Keyboard & semantics
+
+- Native elements first: `<button>`, not `<div onClick>`. Icon-only buttons
+  get an `aria-label`. No positive `tabindex`. Never remove the focus outline
+  without a `:focus-visible` replacement. Modals use native `<dialog>`:
+  Escape closes, focus returns to the trigger.
+- Announce dynamic changes: `role="status"` / `aria-live="polite"` for
+  success, `role="alert"` for errors. SPA route changes are announced; every
+  page has a unique `<title>`.
+
+## No layout shift
+
+- Images carry explicit `width`/`height` or `aspect-ratio`. Verify loading,
+  error, and empty states never render broken-image icons.
+
+## Done-definition for a mounted page
+
+- Renders at 320px CSS width without horizontal scroll; contrast ≥ 4.5:1 for
+  text, ≥ 3:1 for UI; fully operable by keyboard (Tab / Shift+Tab / Enter /
+  Space / Escape); a form still submits without JS (progressive enhancement).
+
+---
+Distilled from the CC0 landing-page-image-quality cursor rule, the MIT
+github/awesome-copilot `a11y.instructions.md` (WCAG 2.2 AA), and web.dev Learn
+Forms (CC BY 4.0).

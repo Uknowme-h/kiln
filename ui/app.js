@@ -1,7 +1,9 @@
 /* Glue: load the roster, subscribe to the SSE event contract, drive the scene,
  * and run the client console: Brief (idle) → Pairing (waiting for the local
  * companion) → Connected (notes live against the real run). The header demo
- * button still plays the scripted rehearsal feed: running → Handoff. */
+ * button still plays the scripted rehearsal feed: running → Handoff. The
+ * header auto-approve switch (and "Allow all" in the approval dialog) lets
+ * commands run unattended; the plan review and questions always ask. */
 "use strict";
 
 const canvas = document.getElementById("floor");
@@ -31,9 +33,19 @@ function setApprovalBadge(on, detail) {
 // whichever the user answers first wins ──
 let approvalQueue = []; // pending approval events (the companion serializes them, so ≤1 in practice)
 let approvalShown = null; // the event currently on screen
+// answered here and dismissed optimistically; their approval_resolved is
+// still on its way and must not close the NEXT pending dialog
+let answeredLocally = [];
+
+// Decisions auto-approve never makes for the user (companion NEVER_AUTO_APPROVE)
+const NEVER_AUTO = new Set(["plan", "question"]);
 
 function isQuestionEvent(ev) {
   return ev && (ev.action === "question" || (ev.questions && ev.questions.length));
+}
+
+function isCommandEvent(ev) {
+  return ev && !isQuestionEvent(ev) && !NEVER_AUTO.has(ev.action);
 }
 
 function showNextApproval() {
@@ -52,6 +64,7 @@ function showNextApproval() {
   approvalNote.textContent = ev.note ? `note: ${ev.note}` : "";
   approvalNote.classList.toggle("hidden", !ev.note);
   approvalAlways.classList.toggle("hidden", !ev.allow_run_scope);
+  approvalAll.classList.toggle("hidden", !isCommandEvent(ev));
   approvalFeedback.value = "";
   approvalDialog.classList.remove("hidden");
 }
@@ -132,16 +145,29 @@ function dismissApproval(ev) {
   }
 }
 
+// A floor-side approval_resolved: the terminal answered (close its dialog) or
+// it is the echo of an answer given here (already closed).
+function resolveApproval(ev) {
+  const mine = answeredLocally.findIndex((q) => q.agent_id === ev.agent_id);
+  if (mine >= 0) {
+    answeredLocally.splice(mine, 1);
+    return;
+  }
+  const match = approvalQueue.find((q) => q.agent_id === ev.agent_id) || approvalQueue[0];
+  if (match) dismissApproval(match);
+}
+
 function resetApprovals() {
   approvalQueue = [];
   approvalShown = null;
+  answeredLocally = [];
   pendingApprovals = 0;
+  scene.setWaiting(null);
   approvalDialog.classList.add("hidden");
   questionDialog.classList.add("hidden");
   setApprovalBadge(false);
 }
 
-const stageWrap = document.querySelector(".stage-wrap");
 const briefEl = document.getElementById("brief");
 const ideaInput = document.getElementById("idea-input");
 const briefBtn = document.getElementById("brief-btn");
@@ -170,6 +196,10 @@ const drawerTitle = document.getElementById("drawer-title");
 const drawerSub = document.getElementById("drawer-sub");
 const drawerBody = document.getElementById("drawer-body");
 const drawerClose = document.getElementById("drawer-close");
+const drawerPickEl = document.getElementById("drawer-pick");
+const drawerStatusEl = document.getElementById("drawer-status");
+const drawerTaskEl = document.getElementById("drawer-task");
+const drawerActivityEl = document.getElementById("drawer-activity");
 const approvalDialog = document.getElementById("approval-dialog");
 const approvalTitle = document.getElementById("approval-title");
 const approvalAgent = document.getElementById("approval-agent");
@@ -177,6 +207,8 @@ const approvalLines = document.getElementById("approval-lines");
 const approvalNote = document.getElementById("approval-note");
 const approvalAllow = document.getElementById("approval-allow");
 const approvalAlways = document.getElementById("approval-always");
+const approvalAll = document.getElementById("approval-all");
+const autoBtn = document.getElementById("auto-btn");
 const approvalDeny = document.getElementById("approval-deny");
 const approvalFeedback = document.getElementById("approval-feedback");
 const questionDialog = document.getElementById("question-dialog");
@@ -188,30 +220,32 @@ const questionSkip = document.getElementById("question-skip");
 
 async function postApprovalBody(body) {
   const ev = approvalShown;
-  if (!ev) return;
+  if (!ev) return null;
   dismissApproval(ev); // optimistic; approval_resolved logs the outcome
-  if (!activeRun) return;
+  if (!activeRun) return null;
+  answeredLocally.push(ev);
   try {
-    const res = await (
-      await fetch(`/runs/${activeRun.run_id}/approvals`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      })
-    ).json();
-    if (res.ok === false) throw new Error(res.error || "rejected");
+    const res = await postJson(`/runs/${activeRun.run_id}/approvals`, body);
+    if (res.ok === false || res.error) throw new Error(res.error || "rejected");
+    return res;
   } catch {
     // the answer never reached the companion — put the question back up
+    answeredLocally = answeredLocally.filter((q) => q !== ev);
     if (!approvalQueue.includes(ev)) approvalQueue.unshift(ev);
     showNextApproval();
     log("your answer did not reach the companion — answer again, or use the terminal");
+    return null;
   }
 }
 
 async function answerApproval(approved, scope) {
   // deny can carry the user's reason back to the agent as the tool error
   const feedback = approved ? "" : approvalFeedback.value.trim();
-  await postApprovalBody({ approved, scope: scope || "once", feedback });
+  const res = await postApprovalBody({ approved, scope: scope || "once", feedback });
+  if (res && scope === "all") {
+    setAutoApprove(true);
+    log("auto-approve on — commands run without asking; the plan and questions still ask");
+  }
 }
 
 async function answerQuestions(answers) {
@@ -220,7 +254,58 @@ async function answerQuestions(answers) {
 
 approvalAllow.addEventListener("click", () => answerApproval(true, "once"));
 approvalAlways.addEventListener("click", () => answerApproval(true, "run"));
+approvalAll.addEventListener("click", () => answerApproval(true, "all"));
 approvalDeny.addEventListener("click", () => answerApproval(false, "once"));
+
+// ── auto-approve: the floor's "allow all commands" switch ──
+let autoApprove = false;
+
+function setAutoApprove(on) {
+  autoApprove = !!on;
+  autoBtn.classList.toggle("on", autoApprove);
+  autoBtn.setAttribute("aria-pressed", String(autoApprove));
+  autoBtn.textContent = `auto-approve: ${autoApprove ? "on" : "off"}`;
+}
+
+function showAutoButton(on) {
+  autoBtn.classList.toggle("hidden", !on);
+}
+
+autoBtn.addEventListener("click", async () => {
+  if (!activeRun) return;
+  const enable = !autoApprove;
+  if (enable && !window.confirm(
+    "Auto-approve every command the agents run (shell, installs, network) for the rest of this run?\n\n" +
+    "The plan review and the agents' questions will still ask you."
+  )) return;
+  // a command waiting on screen is answered by the same switch
+  if (enable && isCommandEvent(approvalShown)) {
+    await answerApproval(true, "all");
+    return;
+  }
+  autoBtn.disabled = true;
+  try {
+    const res = await postJson(`/runs/${activeRun.run_id}/auto-approve`, { enabled: enable });
+    if (res.ok === false || res.error) throw new Error(res.error || "rejected");
+    setAutoApprove(res.auto_approve);
+    log(enable
+      ? "auto-approve on — commands run without asking; the plan and questions still ask"
+      : "auto-approve off — commands ask again");
+  } catch (err) {
+    log(`auto-approve did not reach the companion: ${err.message}`);
+  } finally {
+    autoBtn.disabled = false;
+  }
+});
+
+async function postJson(url, body) {
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  return resp.json();
+}
 questionSubmit.addEventListener("click", () => answerQuestions(collectQuestionAnswers()));
 questionSkip.addEventListener("click", () => {
   const n = questionList.querySelectorAll(".question-item").length;
@@ -233,6 +318,7 @@ let lastTests = null; // last test_run_finished event
 let lastUsage = null; // last usage_tick event
 let lastIdea = "";
 let activeRun = null; // the real run from POST /runs; kept after finish so the drawer can read its transcript
+let liveRunId = null; // run_id from the last run_started (the demo's is "demo-1")
 let lastWorkspace = ""; // the folder the companion builds in, from the poll
 let pollTimer = null;
 let browseCwd = "";
@@ -247,7 +333,15 @@ function setConsole(state) {
   if (pairBrowseEl) pairBrowseEl.classList.toggle("hidden", state !== "browsing");
   handoffEl.classList.toggle("hidden", state !== "finished");
   dockEl.classList.toggle("hidden", state !== "running" && state !== "connected");
-  stageWrap.classList.toggle("dimmed", state !== "running" && state !== "connected");
+  scene.setDimmed(state !== "running" && state !== "connected");
+  // a real run in progress owns the floor; the rehearsal would scramble it
+  demoBtn.disabled = !!activeRun && state !== "idle" && state !== "finished";
+  showAutoButton(!!activeRun && ["browsing", "connected", "running"].includes(state));
+}
+
+// the real run is on the floor (not the rehearsal feed)
+function realRunLive() {
+  return !!activeRun && liveRunId === activeRun.run_id;
 }
 
 function log(text, you) {
@@ -297,6 +391,11 @@ function startPolling(runId) {
   pollTimer = setInterval(async () => {
     try {
       const status = await (await fetch(`/runs/${runId}`)).json();
+      if (!activeRun || activeRun.run_id !== runId) return; // a newer Brief took over
+      if (typeof status.auto_approve === "boolean" && status.auto_approve !== autoApprove) {
+        setAutoApprove(status.auto_approve);
+      }
+      const live = realRunLive();
       if (status.status === "paired" && (consoleState === "pairing" || consoleState === "browsing")) {
         if (consoleState !== "browsing") {
           setConsole("browsing");
@@ -309,11 +408,14 @@ function startPolling(runId) {
         (consoleState === "pairing" || consoleState === "browsing")
       ) {
         lastWorkspace = status.workspace || "";
-        setConsole("connected");
-        log(`workspace locked (${status.workspace || "…"}) — the run is on`);
+        // a reconnect mid-build goes straight back to the live floor
+        setConsole(live ? "running" : "connected");
+        log(live
+          ? "your machine is back — the team picks up where it left off"
+          : `workspace locked (${status.workspace || "…"}) — the run is on`);
       } else if (
         status.status === "disconnected" &&
-        (consoleState === "connected" || consoleState === "browsing")
+        (consoleState === "connected" || consoleState === "browsing" || consoleState === "running")
       ) {
         pairStatusEl.textContent = "machine disconnected — re-run listen and paste the same code";
         setConsole("pairing");
@@ -329,6 +431,7 @@ function startPolling(runId) {
 
 function showPairing(run) {
   activeRun = run;
+  setAutoApprove(false); // the poll reports the companion's real state once it pairs
   pairCodeEl.textContent = run.pair_code;
   pairCmdEl.textContent = run.connect || "kiln-companion listen";
   pairStatusEl.textContent = "waiting for your machine…";
@@ -440,9 +543,13 @@ function handle(ev) {
       lastTests = null;
       lastUsage = null;
       lastIdea = ev.idea;
+      liveRunId = ev.run_id;
       closeDrawer();
+      resetPeople();
       resetApprovals();
-      stopPolling();
+      // a real run keeps polling so a mid-build disconnect shows up on the
+      // floor; a rehearsal has nothing to poll
+      if (!realRunLive()) stopPolling();
       // keep activeRun: its transcript stays fetchable from the Handoff screen
       ciEl.className = "ci ci-idle";
       ciEl.textContent = "building…";
@@ -450,19 +557,29 @@ function handle(ev) {
       log(`run started — “${ev.idea}”`);
       break;
     case "run_finished":
-      scene.celebrate();
+      if (realRunLive()) stopPolling();
+      resetApprovals();
+      scene.celebrate(ev.green);
       log(ev.green ? "run finished — green!" : "run finished — not green");
       showHandoff(ev);
       break;
     case "agent_status": {
-      // Dynamically seat workers (and any role) that were not in the static roster
-      scene.ensureAgent(ev.agent);
+      // Dynamically seat workers (and any role) that were not in the static roster;
+      // the event's AgentRef is authoritative for the desk label
+      scene.ensureAgent(ev.agent, true);
       scene.setStatus(ev.agent.id, ev.status, ev.detail);
+      const p = person(ev.agent);
+      p.status = ev.status;
+      p.detail = ev.detail || "";
+      note(ev.agent.id, ev.detail ? `${ev.status} — ${ev.detail}` : ev.status);
+      if (drawerAgent === ev.agent.id) renderStatus();
       // the floor mirrors real office behaviour for each beat of the pipeline
       const { id, status } = { id: ev.agent.id, status: ev.status };
       if (id === "requirements" && status === "working") scene.goStation("requirements", "whiteboard");
       else if (id === "requirements" && status === "done") scene.goHome("requirements");
-      else if (id === "planner" && status === "thinking") scene.goHome("planner");
+      // the planner thinks on their feet, pacing by the whiteboard
+      else if (id === "planner" && status === "thinking") scene.goStation("planner", "pace");
+      else if (id === "planner") scene.goHome("planner");
       else if (id === "reporter" && status === "working") scene.goStation("reporter", "printer");
       else if (id === "reporter" && status === "done") scene.goHome("reporter");
       else if (id === "fixer" && status === "done") scene.goHome("fixer");
@@ -479,6 +596,10 @@ function handle(ev) {
       });
       scene.setTask(wid, ev.task.title);
       scene.pinTask(ev.task.id, wid);
+      const p = person({ id: wid, role: "worker", label: (scene.agent(wid) || {}).label || wid });
+      p.task = ev.task.title;
+      note(wid, `took the task “${ev.task.title}”`);
+      if (drawerAgent === wid) renderStatus();
       scene.collectCard(wid); // standup: walk to the board, take your card
       log(`task “${ev.task.title}” → ${wid}`);
       break;
@@ -488,6 +609,8 @@ function handle(ev) {
       // a cry for help sends the fixer walking to the sender's desk
       if (ev.to_agent === "fixer") scene.goHelp("fixer", ev.from_agent);
       log(`${ev.from_agent} → ${ev.to_agent}: ${ev.summary}`);
+      note(ev.from_agent, `sent ${ev.to_agent}: ${ev.summary}`);
+      note(ev.to_agent, `from ${ev.from_agent}: ${ev.summary}`);
       break;
     case "test_run_finished": {
       lastTests = ev;
@@ -512,6 +635,19 @@ function handle(ev) {
       break;
     }
     case "approval_pending":
+      if (ev.auto_approved) {
+        // already allowed by auto-approve: a log line, never a dialog
+        const a = scene.agent(ev.agent_id);
+        const what = (ev.lines && ev.lines[0]) || ev.action;
+        log(`auto-approved — ${a ? a.label.split(" ")[0] : ev.agent_id}: ${what}`);
+        note(ev.agent_id, `auto-approved ${ev.action}: ${what}`);
+        if (!autoApprove) setAutoApprove(true);
+        break;
+      }
+      note(ev.agent_id, isQuestionEvent(ev)
+        ? "asked you some questions"
+        : `waiting for your approval to ${ev.action}: ${(ev.lines && ev.lines[0]) || ev.summary || ""}`);
+      scene.setWaiting(ev.agent_id, true);
       pendingApprovals += 1;
       setApprovalBadge(true, ev.summary || `${ev.agent_id} needs approval`);
       if (activeRun) {
@@ -527,26 +663,140 @@ function handle(ev) {
       }
       break;
     case "approval_resolved":
+      if (ev.auto_approved) break; // its pending line already said so
       pendingApprovals = Math.max(0, pendingApprovals - 1);
       setApprovalBadge(pendingApprovals > 0);
-      if (approvalQueue.length) dismissApproval(approvalQueue[0]); // answered in the terminal
+      resolveApproval(ev);
+      scene.setWaiting(ev.agent_id, false);
       log(ev.approved ? "approval granted" : "approval refused");
+      note(ev.agent_id, ev.approved ? "you approved it" : "you refused it");
       break;
-    case "transcript_tick":
-      // an open drawer on this agent pulls the new entries; the floor stays quiet
-      if (drawerAgent === ev.agent_id && ev.seq > drawerSeq) refreshDrawer(false);
+    case "transcript_tick": {
+      // the one-line summary feeds the activity list; an open drawer on this
+      // agent (or its sub-agents) pulls the full entries
+      const root = rootId(ev.agent_id);
+      const sub = ev.agent_id.slice(root.length + 1);
+      if (ev.summary) note(ev.agent_id, sub ? `${sub}: ${ev.summary}` : ev.summary);
+      if (drawerAgent === root && ev.seq > drawerSeq) refreshDrawer(false);
       break;
+    }
   }
 }
 
-// ── the agent drawer: click a desk, read that agent's recorded I/O ──
+// ── the agent drawer: click someone, see what they are doing and their I/O ──
 let drawerAgent = null; // agent id currently shown
 let drawerSeq = 0; // highest entry seq rendered, for live append
+let drawerOpener = null; // focus goes back here when the drawer closes
+
+const ROLE_NAMES = {
+  requirements: "Requirements analyst", planner: "Planner", test_author: "Test author",
+  worker: "Developer", fixer: "Fixer", reviewer: "Reviewer", reporter: "Reporter",
+};
+const STATUS_COLORS = {
+  idle: "#a199ab", thinking: "#4fa3af", working: "#d8a93c", stuck: "#e06a62", done: "#5fb07f",
+};
+
+// Everyone who has been on the floor this run, including workers who have
+// since handed their desk over, so their work stays one click away.
+const people = new Map(); // id -> { label, role, status, detail, task }
+const activity = new Map(); // id -> [{ at: Date, text }], newest last
+const ACTIVITY_CAP = 60;
+
+function rootId(id) { return String(id).split("/")[0]; }
+
+function person(ref) {
+  if (!ref || !ref.id) return null;
+  let p = people.get(ref.id);
+  if (!p) {
+    p = { label: ref.label || ref.id, role: ref.role || "", status: "idle", detail: "", task: "" };
+    people.set(ref.id, p);
+  }
+  if (ref.label) p.label = ref.label;
+  if (ref.role) p.role = ref.role;
+  return p;
+}
+
+function note(id, text) {
+  if (!id || !text) return;
+  const key = rootId(id);
+  if (!people.has(key)) return; // "kiln", "client", "orchestrator" are not desks
+  let list = activity.get(key);
+  if (!list) activity.set(key, (list = []));
+  list.push({ at: new Date(), text });
+  if (list.length > ACTIVITY_CAP) list.splice(0, list.length - ACTIVITY_CAP);
+  if (drawerAgent === key) renderActivity();
+}
+
+function resetPeople() {
+  activity.clear();
+  for (const [id, p] of people) {
+    if (!scene.agent(id)) people.delete(id); // last run's departed workers
+    else Object.assign(p, { status: "idle", detail: "", task: "" });
+  }
+}
 
 function closeDrawer() {
+  if (!drawerAgent) return;
   drawerAgent = null;
+  scene.setFocus(null);
   drawerEl.classList.add("hidden");
   drawerEl.setAttribute("aria-hidden", "true");
+  if (drawerOpener && document.contains(drawerOpener)) drawerOpener.focus();
+  drawerOpener = null;
+}
+
+function renderStatus() {
+  const p = people.get(drawerAgent);
+  if (!p) return;
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.style.background = STATUS_COLORS[p.status] || STATUS_COLORS.idle;
+  const state = document.createElement("span");
+  state.className = "state";
+  state.textContent = p.status;
+  const detail = document.createElement("span");
+  const here = scene.agent(drawerAgent);
+  detail.textContent = p.detail || (here ? "" : "has left the floor — their work is below");
+  drawerStatusEl.replaceChildren(dot, state, detail);
+  drawerTaskEl.textContent = p.task || "";
+  drawerTaskEl.classList.toggle("hidden", !p.task);
+}
+
+function renderActivity() {
+  const list = activity.get(drawerAgent) || [];
+  if (!list.length) {
+    const li = document.createElement("li");
+    li.className = "empty";
+    li.textContent = "nothing yet — this fills in as they work";
+    drawerActivityEl.replaceChildren(li);
+    return;
+  }
+  const items = list.slice().reverse().map(({ at, text }) => {
+    const li = document.createElement("li");
+    const time = document.createElement("time");
+    time.dateTime = at.toISOString();
+    time.textContent = at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    const span = document.createElement("span");
+    span.textContent = text;
+    li.append(time, span);
+    return li;
+  });
+  drawerActivityEl.replaceChildren(...items);
+}
+
+function renderPicker(extraIds) {
+  const ids = new Set(people.keys());
+  for (const id of extraIds || []) if (people.has(rootId(id))) ids.add(rootId(id));
+  const options = [...ids].map((id) => {
+    const p = people.get(id);
+    const opt = document.createElement("option");
+    opt.value = id;
+    const away = scene.agent(id) ? "" : " (left)";
+    opt.textContent = `${p.label} — ${ROLE_NAMES[p.role] || p.role || "agent"}${away}`;
+    opt.selected = id === drawerAgent;
+    return opt;
+  });
+  drawerPickEl.replaceChildren(...options);
 }
 
 function esc(s) {
@@ -567,10 +817,20 @@ function block(label, text, cls) {
 
 function renderEntry(entry) {
   const wrap = document.createElement("div");
-  wrap.className = `tx-entry tx-${entry.kind}`;
+  // work this agent delegated (an explore sub-agent, a context compaction)
+  const sub = entry.agent_id && entry.agent_id !== drawerAgent
+    ? entry.agent_id.slice(rootId(entry.agent_id).length + 1)
+    : "";
+  wrap.className = `tx-entry tx-${entry.kind}${sub ? " tx-sub" : ""}`;
   const head = document.createElement("div");
   head.className = "tx-head";
   head.textContent = `#${entry.seq} ${entry.kind.replace("_", " ")}`;
+  if (sub) {
+    const who = document.createElement("span");
+    who.className = "tx-who";
+    who.textContent = ` · ${sub}`;
+    head.appendChild(who);
+  }
   wrap.appendChild(head);
   const p = entry.payload || {};
   if (entry.kind === "model_call") {
@@ -605,53 +865,132 @@ function pretty(v) {
   try { return JSON.stringify(JSON.parse(v), null, 2); } catch { return v; }
 }
 
+// Ticks arrive in bursts (one per recorded entry); at most one fetch is in
+// flight, and a burst during it is folded into a single follow-up fetch.
+let drawerFetching = false;
+let drawerAgain = false;
+
 async function refreshDrawer(full) {
-  if (!drawerAgent || !activeRun) return;
+  if (!drawerAgent) return;
+  if (!activeRun) {
+    if (full) {
+      drawerBody.replaceChildren(block("transcript",
+        "Model and tool I/O is recorded during a real run. The rehearsal only plays floor events — see Activity above.",
+        "tx-result"));
+    }
+    return;
+  }
+  if (drawerFetching && !full) { drawerAgain = true; return; }
+  const agentId = drawerAgent;
+  drawerFetching = true;
+  drawerAgain = false;
   try {
-    const url = `/runs/${activeRun.run_id}/transcript?agent=${encodeURIComponent(drawerAgent)}` +
+    const url = `/runs/${activeRun.run_id}/transcript?agent=${encodeURIComponent(agentId)}` +
       (full ? "" : `&after=${drawerSeq}`);
     const data = await (await fetch(url)).json();
-    if (full) { drawerBody.replaceChildren(); drawerSeq = 0; }
+    if (drawerAgent !== agentId) return; // the drawer moved to another desk meanwhile
+    if (full) { drawerBody.replaceChildren(); drawerSeq = 0; renderPicker(data.agents); }
     if (!data.entries || (!data.entries.length && full)) {
       if (full) drawerBody.appendChild(block("transcript", "no recorded I/O for this agent yet", "tx-result"));
       return;
     }
+    if (!full && data.entries.length && drawerSeq === 0) drawerBody.replaceChildren(); // drop the placeholder
+    const stick = drawerBody.scrollHeight - drawerBody.scrollTop - drawerBody.clientHeight < 40;
+    const frag = document.createDocumentFragment();
     for (const entry of data.entries) {
-      drawerBody.appendChild(renderEntry(entry));
-      drawerSeq = Math.max(drawerSeq, entry.seq);
+      if (entry.seq <= drawerSeq) continue;
+      frag.appendChild(renderEntry(entry));
+      drawerSeq = entry.seq;
     }
-    drawerBody.scrollTop = drawerBody.scrollHeight;
+    drawerBody.appendChild(frag);
+    // follow the live tail, but never yank someone reading further up
+    if (full || stick) drawerBody.scrollTop = drawerBody.scrollHeight;
   } catch { /* a dropped fetch is not a dropped drawer */ }
+  finally {
+    drawerFetching = false;
+    if (drawerAgain && drawerAgent) refreshDrawer(false);
+  }
 }
 
 function openDrawer(agentId) {
   const a = scene.agent(agentId);
-  if (!a) return;
+  const p = a ? person(a) : people.get(agentId);
+  if (!p) return;
+  if (!drawerAgent) drawerOpener = document.activeElement;
+  const switching = drawerAgent !== agentId;
   drawerAgent = agentId;
-  drawerTitle.textContent = a.label;
-  drawerSub.textContent = activeRun
-    ? `${a.role} · run ${activeRun.run_id}`
-    : `${a.role} · no live run — transcripts exist only during a real run`;
+  scene.setFocus(agentId);
+  drawerTitle.textContent = p.label;
+  const role = ROLE_NAMES[p.role] || p.role || "agent";
+  drawerSub.textContent = activeRun ? `${role} · run ${activeRun.run_id}` : `${role} · rehearsal`;
+  renderPicker();
+  renderStatus();
+  renderActivity();
   drawerEl.classList.remove("hidden");
   drawerEl.setAttribute("aria-hidden", "false");
+  if (switching) drawerBody.replaceChildren();
   refreshDrawer(true);
 }
 
-canvas.addEventListener("click", (ev) => {
+function floorPoint(ev) {
   const rect = canvas.getBoundingClientRect();
-  const x = ((ev.clientX - rect.left) / rect.width) * canvas.width;
-  const y = ((ev.clientY - rect.top) / rect.height) * canvas.height;
-  const id = scene.agentAt(x, y);
+  return [
+    ((ev.clientX - rect.left) / rect.width) * canvas.width,
+    ((ev.clientY - rect.top) / rect.height) * canvas.height,
+  ];
+}
+canvas.addEventListener("click", (ev) => {
+  const id = scene.agentAt(...floorPoint(ev));
   if (id) openDrawer(id);
 });
+let hoverPending = false;
 canvas.addEventListener("mousemove", (ev) => {
-  const rect = canvas.getBoundingClientRect();
-  const x = ((ev.clientX - rect.left) / rect.width) * canvas.width;
-  const y = ((ev.clientY - rect.top) / rect.height) * canvas.height;
-  canvas.style.cursor = scene.agentAt(x, y) ? "pointer" : "default";
+  if (hoverPending) return; // one hit test per frame is plenty
+  hoverPending = true;
+  requestAnimationFrame(() => {
+    hoverPending = false;
+    const id = scene.agentAt(...floorPoint(ev));
+    canvas.style.cursor = id ? "pointer" : "default";
+    const p = id && people.get(id);
+    canvas.title = p ? `${p.label} — click to see their work` : "";
+  });
 });
+drawerPickEl.addEventListener("change", () => openDrawer(drawerPickEl.value));
 drawerClose.addEventListener("click", closeDrawer);
 document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeDrawer(); });
+
+// ── crisp pixels: size the canvas so every art pixel lands on whole screen pixels ──
+const stageWrapEl = canvas.parentElement;
+const ART_PX = 3; // one sprite pixel is 3 canvas pixels
+function fitCanvas() {
+  const box = stageWrapEl.getBoundingClientRect();
+  if (!box.width || !box.height) return;
+  const dpr = window.devicePixelRatio || 1;
+  const fit = Math.min(box.width / canvas.width, box.height / canvas.height);
+  const steps = Math.floor(fit * ART_PX * dpr); // whole screen pixels per art pixel
+  const snapped = steps / (ART_PX * dpr);
+  // snap when it costs little; on a 1× screen the steps are coarse (⅓, ⅔, 1),
+  // and shrinking the floor by a quarter is worse than slightly uneven pixels
+  const scale = steps >= 1 && snapped >= fit * 0.88 ? snapped : fit;
+  canvas.style.width = `${Math.floor(canvas.width * scale)}px`;
+  canvas.style.height = `${Math.floor(canvas.height * scale)}px`;
+}
+new ResizeObserver(fitCanvas).observe(stageWrapEl);
+// a browser zoom changes devicePixelRatio without resizing the box
+(function watchDpr() {
+  const mq = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  mq.addEventListener("change", () => { fitCanvas(); watchDpr(); }, { once: true });
+})();
+
+// ── motion and time preferences ──
+const reducedMotion = matchMedia("(prefers-reduced-motion: reduce)");
+scene.setReducedMotion(reducedMotion.matches);
+reducedMotion.addEventListener("change", (e) => scene.setReducedMotion(e.matches));
+// ?hour=21 previews the floor at that time of day (the lighting follows the clock)
+{
+  const hour = parseFloat(new URLSearchParams(location.search).get("hour"));
+  if (!Number.isNaN(hour)) scene.setClock(hour);
+}
 
 function loop(now) {
   scene.frame(now);
@@ -732,9 +1071,10 @@ dockEl.addEventListener("submit", async (e) => {
   const text = noteInput.value.trim();
   if (!text) return;
   noteInput.value = "";
-  // a connected real run gets the planner mailbox; the demo feed gets its echo
-  const url =
-    consoleState === "connected" && activeRun ? `/runs/${activeRun.run_id}/notes` : "/demo/note";
+  // a real run (connected, or building on the floor) gets the planner
+  // mailbox; the rehearsal feed gets its echo
+  const real = activeRun && (consoleState === "connected" || realRunLive());
+  const url = real ? `/runs/${activeRun.run_id}/notes` : "/demo/note";
   try {
     await fetch(url, {
       method: "POST",
@@ -750,6 +1090,8 @@ dockEl.addEventListener("submit", async (e) => {
 againBtn.addEventListener("click", () => {
   stopPolling();
   activeRun = null;
+  liveRunId = null;
+  setAutoApprove(false);
   setConsole("idle");
   ideaInput.focus();
 });
@@ -757,8 +1099,13 @@ againBtn.addEventListener("click", () => {
 async function start() {
   setConn("wait");
   setConsole("idle");
-  const roster = await (await fetch("/api/agents")).json();
-  for (const ref of roster) scene.addAgent(ref);
+  try {
+    const roster = await (await fetch("/api/agents")).json();
+    for (const ref of roster) { scene.addAgent(ref); person(ref); }
+  } catch (err) {
+    // the floor still runs; agents are seated as their events arrive
+    log(`could not load the roster: ${err.message}`);
+  }
   requestAnimationFrame(loop);
 
   const source = new EventSource("/events/stream");

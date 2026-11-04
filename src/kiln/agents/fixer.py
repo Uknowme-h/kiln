@@ -17,6 +17,7 @@ from pydantic import ValidationError
 
 from kiln.agents.briefing import (
     briefing_reminder_suffix,
+    plan_memo_block,
     product_briefing_blocks,
     spec_excerpt_for_task,
 )
@@ -75,8 +76,22 @@ def _current_files_block(current_files: dict[str, str]) -> str:
     return "\n\n".join(blocks)
 
 
-def _skill_kwargs(*, ui_product: bool = False, prod_ops: bool = False, security: bool = False) -> dict:
-    return {"ui_product": ui_product, "prod_ops": prod_ops, "security": security}
+def _file_index_block(paths: list[str]) -> str:
+    """Owned paths to read, not their bodies — the agentic fixer must read_file
+    before it may edit anyway (the companion's read-before-write ledger), so
+    inlining every blamed file paid for each body twice."""
+    listed = "\n".join(f"- {path}" for path in paths)
+    return (
+        "<owned_files>\n"
+        "The files in scope for this fix. Read the ones the failures point at "
+        "with read_file before you edit them:\n"
+        f"{listed}\n"
+        "</owned_files>"
+    )
+
+
+def _skill_kwargs(*, ui_product: bool = False, prod_ops: bool = False, security: bool = False, extra_skills: tuple[str, ...] = ()) -> dict:
+    return {"ui_product": ui_product, "prod_ops": prod_ops, "security": security, "extra_skills": extra_skills}
 
 
 def _messages(
@@ -91,9 +106,11 @@ def _messages(
     spec: Spec | None = None,
     design: str | None = None,
     discovery: str | None = None,
+    plan_memo: str | None = None,
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
 ) -> list[dict[str, str]]:
     log = report.raw_log[:MAX_LOG_CHARS]
     contract_block = (
@@ -102,9 +119,12 @@ def _messages(
         else ""
     )
     excerpt = spec_excerpt_for_task(spec, task) if spec is not None else ""
-    briefing = product_briefing_blocks(design=design, discovery=discovery)
+    briefing = product_briefing_blocks(design=design, discovery=discovery) + plan_memo_block(
+        plan_memo
+    )
     user = (
-        "Patch the code so these tests pass. Answer with the patch JSON only.\n\n"
+        "Patch the code so these tests pass. Answer with the patch JSON only; "
+        "each file in it carries the full corrected contents.\n\n"
         f"<task>\n{task.model_dump_json(indent=2)}\n</task>\n"
         + excerpt
         + briefing
@@ -142,7 +162,7 @@ def _messages(
             "content": system_prompt_for(
                 Role.FIXER,
                 **_skill_kwargs(
-                    ui_product=ui_product, prod_ops=prod_ops, security=security
+                    ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills
                 ),
             ),
         },
@@ -183,9 +203,11 @@ def run(
     spec: Spec | None = None,
     design: str | None = None,
     discovery: str | None = None,
+    plan_memo: str | None = None,
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
 ) -> FixPatch:
     """Turn one failing report into a validated patch. One retry with the error shown.
 
@@ -196,7 +218,13 @@ def run(
     """
     if not current_files:
         raise FixerError("the fixer needs the current contents of the task's files")
-    skill = dict(ui_product=ui_product, prod_ops=prod_ops, security=security)
+    skill = dict(
+        plan_memo=plan_memo,
+        ui_product=ui_product,
+        prod_ops=prod_ops,
+        security=security,
+        extra_skills=extra_skills,
+    )
     try:
         return _attempt(
             gateway,
@@ -258,16 +286,27 @@ async def run_agentic(
     spec: Spec | None = None,
     design: str | None = None,
     discovery: str | None = None,
+    plan_memo: str | None = None,
+    file_index: list[str] | None = None,
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
 ) -> FixPatch:
-    """Tool-using fixer: read the JUnit log and owned files, then patch on disk."""
+    """Tool-using fixer: read the JUnit log and owned files, then patch on disk.
+
+    `known_gaps` leads with brief-review gaps when the suite is already green
+    but the app does not deliver the brief. Those are the work — an empty
+    patch is only acceptable when none of them is a code defect.
+
+    `file_index` lists the in-scope paths to read instead of inlining bodies;
+    `current_files` (inline bodies) is still honoured when a caller passes it.
+    """
     definition = definition_for(Role.FIXER)
     system = system_prompt_for(
         Role.FIXER,
         **_skill_kwargs(
-            ui_product=ui_product, prod_ops=prod_ops, security=security
+            ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills
         ),
     )
     if escalate:
@@ -275,14 +314,33 @@ async def run_agentic(
             "\n\nThis is the final allowed fix attempt — prefer a decisive, "
             "minimal patch over another partial try."
         )
+    # Brief gaps reopen the fixer on a green suite. Frame that run around the
+    # gaps, not the (already-green) JUnit, or the model reads the green report
+    # and stands down — run-9f836de2 shipped an unmounted app exactly this way.
+    green_suite_brief_work = report.green and bool(known_gaps)
+    if green_suite_brief_work:
+        opening = (
+            "The suite is already green, but the app does not yet deliver the "
+            "brief. The evidence-backed gaps in <known_gaps> below are the work: "
+            "patch the code inside the task's owned paths so each one is resolved. "
+            "Read the owned source files, find why each gap is true, and fix it. "
+            "Never touch tests/. When every gap is addressed (or you can show it "
+            "is host/tooling, not a code defect), call submit_result.\n\n"
+        )
+    else:
+        opening = (
+            "The suite is failing. Use your tools to read the JUnit report at "
+            f"`{RESULTS_FILE}` and the owned source files, then edit or write fixes "
+            "inside the task's owned paths only. Never touch tests/. When the "
+            "failures are addressed (or you can go no further), call submit_result.\n\n"
+        )
     excerpt = spec_excerpt_for_task(spec, task) if spec is not None else ""
-    briefing = product_briefing_blocks(design=design, discovery=discovery)
+    briefing = product_briefing_blocks(design=design, discovery=discovery) + plan_memo_block(
+        plan_memo
+    )
     user = (
-        "The suite is failing. Use your tools to read the JUnit report at "
-        f"`{RESULTS_FILE}` and the owned source files, then edit or write fixes "
-        "inside the task's owned paths only. Never touch tests/. When the "
-        "failures are addressed (or you can go no further), call submit_result.\n\n"
-        f"<task>\n{task.model_dump_json(indent=2)}\n</task>\n"
+        opening
+        + f"<task>\n{task.model_dump_json(indent=2)}\n</task>\n"
         + excerpt
         + briefing
         + "\n\n"
@@ -294,6 +352,8 @@ async def run_agentic(
         user += f"\n<contract>\n{contract.model_dump_json(indent=2)}\n</contract>\n"
     if current_files:
         user += "\n" + _current_files_block(current_files)
+    elif file_index:
+        user += "\n" + _file_index_block(file_index)
     if known_gaps:
         user += (
             "\n\n<known_gaps>\n"
@@ -318,6 +378,13 @@ async def run_agentic(
                 path == p or path.startswith(p.rstrip("/") + "/") for p in task.owned_paths
             ):
                 return f"{path} is outside the task's owned paths"
+        if green_suite_brief_work and not payload.files_written:
+            return (
+                "the brief reviewer filed code gaps but files_written is empty. "
+                "Patch the files behind each gap, or explain in diagnosis why a "
+                "gap is host/tooling (not a code defect) — an empty patch does "
+                "not resolve a code gap."
+            )
         return None
 
     settings = gateway.settings
@@ -354,9 +421,38 @@ async def run_agentic(
             todo_probe_every=settings.todo_probe_every,
             enable_compaction=settings.enable_compaction,
             compact_threshold_chars=settings.compact_threshold_chars,
+            prune_protect_chars=settings.prune_protect_chars,
         )
     except AgentLoopError as exc:
-        raise FixerError(str(exc)) from exc
+        # Salvage a patch that is already on disk instead of aborting the run.
+        # Only files really written in scope count — an empty patch is never
+        # blessed (the brief-gap guard above stays intact). The re-run suite and
+        # the bounded re-review still judge it; the diagnosis says it is partial.
+        written = [
+            p for p in exc.written_paths
+            if not p.startswith("tests/")
+            and any(p == o or p.startswith(o.rstrip("/") + "/") for o in task.owned_paths)
+        ]
+        salvaged: list[WorkFile] = []
+        for path in written:
+            try:
+                content = await wrapped("read_file", {"path": path})
+            except Exception:
+                continue
+            if content.startswith("# lines "):
+                content = content.split("\n", 1)[-1]
+            if content:
+                salvaged.append(WorkFile(path=path, content=content))
+        if not salvaged:
+            raise FixerError(str(exc)) from exc
+        return FixPatch.model_validate(
+            {
+                "diagnosis": f"(partial, unverified) the fixer's loop ended without a "
+                f"handoff ({exc}); patched {', '.join(f.path for f in salvaged)}",
+                "files": [{"path": f.path, "content": f.content} for f in salvaged],
+            },
+            context={"owned_paths": task.owned_paths},
+        )
 
     files: list[WorkFile] = []
     for path in outcome.result.files_written:
@@ -371,8 +467,10 @@ async def run_agentic(
     if not files:
         # Suite already green and the model found nothing to patch (e.g. a
         # product-gate that was really host env). Empty patch lets the
-        # orchestrator exit the fix loop instead of aborting the run.
-        if report.green and not outcome.result.files_written:
+        # orchestrator exit the fix loop instead of aborting the run — but
+        # only when there is no actionable brief work. With code gaps on the
+        # table an empty patch is a no-op, not a resolution.
+        if report.green and not outcome.result.files_written and not green_suite_brief_work:
             return FixPatch.model_validate(
                 {
                     "diagnosis": outcome.result.diagnosis

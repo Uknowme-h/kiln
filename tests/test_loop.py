@@ -149,8 +149,11 @@ def test_the_cap_withdraws_tools_and_demands_a_handoff():
 
 
 def test_the_cap_without_a_valid_handoff_is_an_error():
+    from kiln.agents.loop import HANDOFF_ATTEMPTS
+
     reads = [turn(call("read_file", {"path": f"f{i}.py"})) for i in range(2)]
-    gateway = ScriptedGateway(reads + [turn()])
+    # every handoff attempt comes back without a submit
+    gateway = ScriptedGateway(reads + [turn() for _ in range(HANDOFF_ATTEMPTS)])
     with pytest.raises(AgentLoopError, match="step cap"):
         drive(gateway, max_steps=2)
 

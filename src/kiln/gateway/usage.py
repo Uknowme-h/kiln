@@ -72,10 +72,15 @@ class UsageLog:
                 bucket["calls"] += 1
                 bucket["prompt_tokens"] += entry.prompt_tokens
                 bucket["completion_tokens"] += entry.completion_tokens
+        fallback_calls = sum(1 for entry in records if entry.fallback)
         return {
             "calls": len(records),
             "prompt_tokens": sum(entry.prompt_tokens for entry in records),
             "completion_tokens": sum(entry.completion_tokens for entry in records),
+            # Coding roles fell back to the Meta/Spark route this many times —
+            # surfaced so the cost report can say the open-weight endpoint was
+            # never configured (run-9f836de2: 125/145 calls, 86%, on fallback).
+            "fallback_calls": fallback_calls,
             "by_role": by_role,
             "by_agent": by_agent,
         }

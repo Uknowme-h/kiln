@@ -16,6 +16,18 @@ def test_records_and_filters_per_agent():
     assert mine[1].seq == 3
 
 
+def test_with_children_includes_delegated_work_but_not_lookalikes():
+    log = TranscriptLog()
+    log.record("worker-1", "worker", "tool_call", {"name": "shell", "args": {}})
+    log.record("worker-1/explore-1", "worker", "model_call", {"content": "x"})
+    log.record("worker-1/compact", "worker", "model_call", {"content": "y"})
+    log.record("worker-10", "worker", "note", {"text": "someone else"})
+
+    assert [e.seq for e in log.for_agent("worker-1")] == [1]  # exact by default
+    assert [e.seq for e in log.for_agent("worker-1", with_children=True)] == [1, 2, 3]
+    assert [e.seq for e in log.for_agent("worker-1", after=1, with_children=True)] == [2, 3]
+
+
 def test_after_returns_only_newer_entries():
     log = TranscriptLog()
     for i in range(4):

@@ -54,8 +54,20 @@ class Settings(BaseSettings):
     # How many dev agents may work at once. Two keeps path ownership easy to
     # reason about; the planner still decides which tasks are independent.
     max_parallel_devs: int = Field(default=2, ge=1, le=8)
+    # A task whose worker ends with nothing delivered gets this many fresh
+    # attempts (told why the last one failed) before the run ends.
+    worker_retries: int = Field(default=1, ge=0, le=3)
+    # Run one fixer per workspace root when the failing tests split cleanly by
+    # root. Failures that span roots (contract mismatches) keep a single fixer.
+    parallel_fixers: bool = True
     # Tests run on the user's machine by default; "docker" is the opt-in sandbox.
     sandbox: str = "host"
+    # Auto-approve shell/install-style approval prompts so a run can proceed
+    # unattended ("auto-approve dive"). CRITICAL SCOPE: this only covers the
+    # command-approval path (PermissionEngine.ask). It NEVER answers ask_user
+    # questions and NEVER approves the plan-approval beat — those stay manual.
+    # Set via the companion's --auto-approve flag or AUTO_APPROVE=true in .env.
+    auto_approve: bool = False
     # Web search provider on the companion: "exa" (hosted, no key) or "duckduckgo".
     web_search_provider: str = "exa"
 
@@ -73,8 +85,12 @@ class Settings(BaseSettings):
     todo_probe_every: int = Field(default=5, ge=1, le=30)
     enable_project_skills: bool = True
     post_edit_diagnostics: bool = True
-    enable_compaction: bool = False
+    enable_compaction: bool = True
     compact_threshold_chars: int = Field(default=100_000, ge=20_000)
+    # OpenCode-style context hygiene: offload big companion outputs to disk,
+    # and prune older tool bodies outside a recent protect window.
+    tool_offload_chars: int = Field(default=8_000, ge=1_000)
+    prune_protect_chars: int = Field(default=40_000, ge=5_000)
 
 
 def load_settings() -> Settings:

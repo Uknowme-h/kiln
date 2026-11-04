@@ -52,13 +52,23 @@ const KilnProps = (() => {
 
   // The task board: a cork board. Sticky notes are pinned on it by the scene,
   // one per assigned task, so the board fills as the planner hands out work.
-  function board() {
+  // `columns`: a kanban board — to do / doing / done, the scene pins the cards.
+  function board(columns) {
     const buf = makeBuf(56, 36);
     rect(buf, 2, 2, 53, 33, hex(W.wood)); // frame
     rect(buf, 4, 4, 51, 31, hex("#C99A5B")); // cork
-    rect(buf, 8, 8, 15, 16, hex(T.cream[50])); // a pinned paper
-    px(buf, 10, 11, INK); px(buf, 10, 13, INK);
-    rect(buf, 42, 6, 49, 14, hex(T.cream[100])); // another paper
+    if (columns) {
+      const heads = [hex(T.ink[300]), hex(T.accent.lemon), hex(T.accent.mint)];
+      for (let c = 0; c < 3; c++) {
+        const x0 = 4 + c * 16;
+        rect(buf, x0 + 1, 5, x0 + 14, 6, heads[c]); // column header strip
+        if (c < 2) rect(buf, x0 + 15, 5, x0 + 15, 30, hex("#B4844A")); // divider
+      }
+    } else {
+      rect(buf, 8, 8, 15, 16, hex(T.cream[50])); // a pinned paper
+      px(buf, 10, 11, INK); px(buf, 10, 13, INK);
+      rect(buf, 42, 6, 49, 14, hex(T.cream[100])); // another paper
+    }
     outline(buf, INK);
     return toCanvas(buf);
   }
@@ -70,8 +80,14 @@ const KilnProps = (() => {
     rect(buf, 2, 1, 17, 12, fill);
     px(buf, 9, 13, fill); px(buf, 10, 13, fill); px(buf, 9, 14, fill); // tail
     const c = kind === "stuck" ? hex(T.accent.coral) : kind === "done" ? hex(T.accent.mint)
-      : kind === "working" ? hex(T.accent.lemon) : hex(T.ink[500]);
-    if (kind === "working") { // three dots
+      : kind === "working" ? hex(T.accent.lemon) : kind === "chat" ? hex(T.accent.sky)
+      : kind === "ask" ? hex(T.accent.lilac) : hex(T.ink[500]);
+    if (kind === "ask") { // ? — waiting on you
+      rect(buf, 8, 3, 11, 3, c); px(buf, 7, 4, c); px(buf, 12, 4, c); px(buf, 12, 5, c);
+      px(buf, 11, 6, c); px(buf, 10, 7, c); px(buf, 10, 8, c); px(buf, 10, 10, c);
+    } else if (kind === "chat") { // two lines of small talk
+      rect(buf, 5, 5, 14, 5, c); rect(buf, 5, 8, 11, 8, c);
+    } else if (kind === "working") { // three dots
       px(buf, 6, 7, c); px(buf, 10, 7, c); px(buf, 14, 7, c);
     } else if (kind === "stuck") { // !
       rect(buf, 9, 4, 10, 8, c); px(buf, 9, 10, c); px(buf, 10, 10, c);
@@ -285,6 +301,23 @@ const KilnProps = (() => {
     return toCanvas(buf);
   }
 
+  // A floating "z" for a dozing agent. 5×5.
+  function zee() {
+    const buf = makeBuf(5, 5);
+    const c = hex(T.ink[500]);
+    rect(buf, 0, 0, 4, 0, c); rect(buf, 0, 4, 4, 4, c);
+    px(buf, 3, 1, c); px(buf, 2, 2, c); px(buf, 1, 3, c);
+    return toCanvas(buf);
+  }
+
+  // A little doormat at the office entrance. 10×14.
+  function doormat() {
+    const buf = makeBuf(10, 14);
+    rect(buf, 0, 0, 9, 13, hex(T.world.woodDark));
+    for (let y = 2; y <= 11; y += 3) rect(buf, 2, y, 7, y, hex(T.world.wood));
+    return toCanvas(buf);
+  }
+
   // Clock face as a raw buffer; the scene stamps hands on a copy each minute. 24×24.
   function clockFace() {
     const buf = makeBuf(24, 24);
@@ -298,7 +331,7 @@ const KilnProps = (() => {
     desk, plant, rack, board, bubble,
     conferenceTable, whiteboard, bookshelf, fileCabinet, printerTable,
     couch, waterCooler, coffeeCounter, bigPlant, trashBin,
-    wallWindow, posterFrame, plank, clockFace, disc,
+    wallWindow, posterFrame, plank, clockFace, disc, zee, doormat,
   };
 })();
 

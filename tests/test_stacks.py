@@ -38,3 +38,22 @@ def test_tsc_smoke_waits_until_node_modules_exists(tmp_path):
     (tmp_path / "node_modules").mkdir()
     commands = node.smoke_commands(tmp_path, ["app.ts"], "Linux")
     assert any("tsc" in " ".join(cmd) for cmd in commands)
+
+
+def test_smoke_commands_for_root_compiles_a_secondary_root(tmp_path):
+    # a python secondary root (backend/) gets a whole-tree compile check
+    py = profile_for("python")
+    backend = tmp_path / "backend" / "app"
+    backend.mkdir(parents=True)
+    (backend / "main.py").write_text("x = 1\n", encoding="utf-8")
+    commands = py.smoke_commands_for_root(tmp_path, "backend", "Linux")
+    assert commands and "compileall" in " ".join(commands[0])
+    # a node secondary root only type-checks once deps + tsconfig are present
+    node = profile_for("node")
+    frontend = tmp_path / "frontend"
+    frontend.mkdir()
+    assert node.smoke_commands_for_root(tmp_path, "frontend", "Linux") == []
+    (frontend / "node_modules").mkdir()
+    (frontend / "tsconfig.json").write_text("{}", encoding="utf-8")
+    commands = node.smoke_commands_for_root(tmp_path, "frontend", "Linux")
+    assert any("tsc" in " ".join(cmd) for cmd in commands)

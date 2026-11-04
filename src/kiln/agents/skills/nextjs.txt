@@ -1,0 +1,40 @@
+# Kiln skill: Next.js (App Router)
+
+Apply when the product is a Next.js app. Next.js may own the whole stack
+(frontend + API route handlers) as a single root.
+
+## Scaffold
+
+- Created by the companion's `scaffold_framework` tool (`create-next-app`,
+  pinned). Defaults are TypeScript + App Router + Tailwind. Never scaffold by
+  hand; never use `pages/` for new code.
+
+## Conventions
+
+- `app/` holds all routes/layouts/pages. Route groups use `(paren)` folders
+  (no URL effect); private folders use a `_prefix`. Standard top-level dirs:
+  `app/`, `public/`, `lib/`, `components/`, `hooks/`, `types/`.
+- **Server Components are the default.** Add `'use client'` only for
+  interactivity, state, or browser APIs. Never use `next/dynamic { ssr:false }`
+  inside a Server Component — extract a Client Component and import it
+  directly (otherwise a build error).
+- Request APIs are async in current Next.js: `await cookies()`,
+  `await headers()`, `await draftMode()`; `params` and `searchParams` are
+  Promises — await them.
+- **Do not `fetch('/api/...')` your own Route Handlers from Server
+  Components** — extract the shared logic into `lib/` and call it directly
+  (skips a server hop). Route handlers (`app/api/*/route.ts`, verb-named
+  exports) are for a genuine external API surface.
+- Secrets live in `.env.local`, never committed. `NEXT_PUBLIC_*` vars are
+  inlined at build time — changing them after build does nothing, and they are
+  public, so no secrets there either.
+
+## Done-definition
+
+- A page is done when it renders in the browser with real data wired through
+  Server Components, unique `<title>` per page, and no client-only data
+  fetching that a Server Component could do.
+
+---
+Distilled from the create-next-app CLI reference (nextjs.org) and the MIT
+github/awesome-copilot `nextjs.instructions.md` (aligned to Next.js 16.1.1).

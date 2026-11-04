@@ -28,7 +28,7 @@ Kiln.T = {
   },
   world: {
     floorA: "#E9D9B8", floorB: "#DCC9A0", rug: "#C98A6B", rugEdge: "#B4704F",
-    wood: "#C9A66B", woodDark: "#A88450", wall: "#8B6F47", rack: "#3A2E4A",
+    wood: "#C9A66B", woodLight: "#D9BC85", woodDark: "#A88450", wall: "#8B6F47", rack: "#3A2E4A",
   },
   tile: 32,
 };

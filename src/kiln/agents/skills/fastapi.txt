@@ -1,0 +1,39 @@
+# Kiln skill: FastAPI
+
+Apply when the product exposes a FastAPI service.
+
+## Layout (the recipe leaves this shape; keep it)
+
+- An `app/` package: `app/main.py`, `app/dependencies.py`, and an
+  `app/routers/` subpackage with **one `APIRouter` module per domain**.
+- `app/main.py` only constructs the `FastAPI` app and calls
+  `app.include_router(...)` for each router — no route soup in `main.py`.
+
+## Conventions
+
+- Set `prefix`, `tags`, `dependencies`, and `responses` on the `APIRouter`,
+  not on each path operation. Router prefixes have no trailing slash; you may
+  add a prefix/tags again at `include_router()` time (e.g. mount the same
+  router under `/api/v1` and `/api/latest`).
+- Prefer a **lifespan** context manager over `@app.on_event("startup")` /
+  `("shutdown")`. Close shared `httpx.AsyncClient`s in lifespan shutdown.
+- Pydantic v2 models for all input and output; **every endpoint declares
+  `response_model=`** so the OpenAPI contract is faithful. Raise
+  `HTTPException` for expected errors; use middleware/an exception handler for
+  unexpected ones. `async def` for I/O-bound work; type hints on all
+  signatures.
+- Dependency injection via `Depends()` plus factory functions in
+  `app/dependencies.py` (e.g. `get_db`). No third-party DI containers.
+- Keep routers thin; services raise domain exceptions, not `HTTPException`.
+  Side-effecting endpoints accept an idempotency key.
+
+## Run
+
+- Dev: `fastapi dev` (or `uvicorn app.main:app --reload`).
+- Prod: `fastapi run` or `uvicorn app.main:app --host 0.0.0.0 --port 8000`.
+  **`--reload` is never used in production** (unstable, resource-hungry).
+
+---
+Distilled from the official FastAPI docs ("Bigger Applications", "Run a Server
+Manually"; MIT) and the CC0 python-fastapi-best-practices and
+fastapi-production-architecture cursor rules (PatrickJS/awesome-cursorrules).

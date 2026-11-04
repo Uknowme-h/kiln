@@ -26,6 +26,13 @@ class PermissionDenied(RuntimeError):
     """Policy or the user said no. The message is returned to the agent as the tool error."""
 
 
+# Decisions --auto-approve must never make for the user. The plan beat routes
+# through authorize() like a shell command does, so without this set
+# auto-approve silently approved the plan (found while building the e2e
+# simulator — the earlier tests only covered ask_user).
+NEVER_AUTO_APPROVE = frozenset({"plan", "question"})
+
+
 @dataclass
 class AuditEntry:
     agent: str
@@ -40,9 +47,17 @@ class PermissionEngine:
         prompt: ApprovalPrompt,
         rules: Ruleset = DEFAULT_RULES,
         audit_limit: int = 500,
+        *,
+        auto_approve: bool = False,
     ):
         self.prompt = prompt
         self.rules = rules
+        # Auto-approve ONLY the command-approval path (this engine's ask()).
+        # ask_user questions and the plan-approval beat never reach this code —
+        # they go through ApprovalPrompt.ask_questions / confirm_plan — so they
+        # stay manual even when auto_approve is on. This is the "auto-approve
+        # dive" for unattended shell runs, not a skip-critical-questions switch.
+        self.auto_approve = auto_approve
         self._grants: set[tuple[str, str]] = set()
         self._lock = threading.Lock()
         self.audit: list[AuditEntry] = []
@@ -86,6 +101,8 @@ class PermissionEngine:
             self._record(who, action, resource, "run-grant")
             return
         request = request or ApprovalRequest(agent_label or who, action, [resource])
+        # read once: the floor may flip the flag from another thread mid-call
+        auto = self.auto_approve and action not in NEVER_AUTO_APPROVE
         if notify is not None:
             notify(
                 ToolProgress(
@@ -99,8 +116,30 @@ class PermissionEngine:
                     lines=list(request.lines),
                     note=request.note,
                     allow_run_scope=request.allow_run_scope,
+                    auto_approved=auto,
                 )
             )
+        if auto:
+            # Auto-approve dive: the command was already shown via the
+            # awaiting_approval notify above; approve it here without blocking
+            # on a terminal/floor reply. Recorded distinctly so the audit trail
+            # and any UI can tell an auto-approval from a human one.
+            self._record(who, action, resource, "auto-allow")
+            if grant and request.allow_run_scope:
+                with self._lock:
+                    self._grants.add(grant)
+            if notify is not None:
+                notify(
+                    ToolProgress(
+                        id=call_id or "approval",
+                        state="approval_resolved",
+                        agent=agent_id,
+                        action=action,
+                        approved=True,
+                        auto_approved=True,
+                    )
+                )
+            return
         reply = self.prompt.ask(request)
         if notify is not None:
             notify(

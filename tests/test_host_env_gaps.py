@@ -30,7 +30,7 @@ def test_real_ui_gaps_stay_actionable():
 
 
 def test_partition_drops_host_env_only():
-    actionable, host = partition_product_gaps(
+    actionable, host, blocked = partition_product_gaps(
         [
             "playwright is not installed",
             "flow home: button missing",
@@ -38,6 +38,25 @@ def test_partition_drops_host_env_only():
     )
     assert actionable == ["flow home: button missing"]
     assert len(host) == 1
+    assert blocked == []
+
+
+def test_partition_separates_blocked_host_setup():
+    from kiln.product.host_env import is_blocked_host_setup
+
+    actionable, host, blocked = partition_product_gaps(
+        [
+            "browser_verify: blocked_host_setup — Playwright is not installed",
+            "playwright is not installed",
+            "flow home: button missing",
+        ]
+    )
+    assert actionable == ["flow home: button missing"]
+    assert len(host) == 1
+    assert len(blocked) == 1
+    assert is_blocked_host_setup(blocked[0])
+    # a blocked gate is not an actionable code gap and not a mere host finding
+    assert "blocked_host_setup" not in " ".join(actionable + host)
 
 
 def test_simple_node_start_avoids_npm_wrapper(tmp_path: Path):

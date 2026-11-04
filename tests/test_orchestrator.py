@@ -15,7 +15,7 @@ from kiln.schemas.results import TestCaseResult, TestReport
 from kiln.schemas.review import ReviewGap, ReviewVerdict
 from kiln.schemas.spec import Spec
 from kiln.schemas.suite import TestSuite
-from kiln.schemas.tasks import TaskGraph
+from kiln.schemas.tasks import Task, TaskGraph
 from kiln.schemas.work import WorkerResult
 
 SPEC = Spec.model_validate(
@@ -96,11 +96,12 @@ class FakeRun:
 class FakeRegistry:
     """Records every relayed tool call; run_tests answers from a script."""
 
-    def __init__(self, test_script, user_notes=(), files=None):
+    def __init__(self, test_script, user_notes=(), files=None, inventory=()):
         self.calls = []
         self.test_script = list(test_script)
         self.run = FakeRun(user_notes)
         self.files = dict(files or {})
+        self.inventory = list(inventory)
 
     def get_run(self, run_id):
         return self.run
@@ -113,6 +114,9 @@ class FakeRegistry:
             return json.dumps({"stack_id": "python", "ready": True, "tools": {}, "label": "Python"})
         if tool in ("served_ui_audit", "runtime_smoke", "browser_verify"):
             return json.dumps({"ok": True, "gaps": []})
+        if tool == "list_dir":
+            # a fresh workspace unless a test opts into an existing project
+            return "\n".join(self.inventory) or "(empty)"
         if tool == "read_file":
             if tool_input.get("path") not in self.files:
                 raise Exception("not found")
@@ -509,6 +513,42 @@ def test_agentic_layers_pass_dependency_references_not_contents(monkeypatch):
     assert "<test_state>" in seen["test_state"]
 
 
+def test_a_failed_worker_never_leaves_its_sibling_running_detached(monkeypatch):
+    """gather() without return_exceptions surfaced the first failure while the
+    sibling worker kept running (holding its lease, calling tools) into a run
+    that was already tearing down. Every worker must finish and release first,
+    and the failure must name the worker and task — not the reporter. A task
+    that delivers nothing gets one fresh worker before the run ends."""
+    from kiln.agents.worker import WorkerError
+    from kiln.graph.orchestrator import LoopError
+
+    finished = []
+
+    async def fake_run_agentic(gw, task, spec, call_tool, **kwargs):
+        if task.id == "a":
+            raise WorkerError("step cap (30) reached without a valid submit_result")
+        await asyncio.sleep(0.2)
+        finished.append(task.id)
+        return _work(task.id, task.owned_paths[0])
+
+    monkeypatch.setattr(orchestrator.worker, "run_agentic", fake_run_agentic)
+    settings = Settings(_env_file=None, agentic_devs=True, sandbox="host", max_parallel_devs=2)
+    registry = FakeRegistry([])
+    events = Collector()
+    orch = Orchestrator(FakeGateway(), registry, events.send, ceiling=200_000, settings=settings)
+    layer = [
+        Task(id="a", title="Backend seams", description="x", owned_paths=["a.py"]),
+        Task(id="b", title="Frontend shell", description="y", owned_paths=["b.py"]),
+    ]
+    with pytest.raises(
+        LoopError, match=r"worker-\d+ \(Backend seams\) failed after 2 attempts: step cap"
+    ):
+        asyncio.run(orch._run_layer("run-1", layer, 0, SPEC, SUITE, {}, GRAPH, ""))
+    assert finished == ["b"]  # the sibling ran to completion before the failure surfaced
+    # a's first worker, a's retry, and b — every lease released
+    assert [tool for tool, _ in registry.calls].count("release_scope") == 3
+
+
 # ── discovery without a mechanical readiness gate; brief review (item 13) ──
 
 
@@ -549,10 +589,10 @@ def test_evidence_backed_review_gaps_reopen_the_fixer_once(monkeypatch):
         return _patch(task.owned_paths[0])
 
     monkeypatch.setattr(orchestrator.fixer, "run", spy_fixer)
-    monkeypatch.setattr(
-        orchestrator.reviewer,
-        "run",
-        lambda *a, **k: ReviewVerdict(
+    # the reviewer files the gap once, then clears on the post-fix re-review
+    # (a real fix closes the gap; the second verdict is what lets the run go green)
+    verdicts = [
+        ReviewVerdict(
             gaps=[
                 ReviewGap(
                     claim="user accounts",
@@ -562,6 +602,12 @@ def test_evidence_backed_review_gaps_reopen_the_fixer_once(monkeypatch):
             ],
             summary="1 gap",
         ),
+        CLEAR_REVIEW,
+    ]
+    monkeypatch.setattr(
+        orchestrator.reviewer,
+        "run",
+        lambda *a, **k: verdicts.pop(0) if verdicts else CLEAR_REVIEW,
     )
     registry = FakeRegistry(
         [
@@ -589,6 +635,245 @@ def test_evidence_backed_review_gaps_reopen_the_fixer_once(monkeypatch):
     assert len(reporter_bundle) == 1
 
 
+def test_a_persistent_brief_gap_after_the_fix_round_ends_not_green(monkeypatch):
+    """B7 re-verification: the suite going green after the fix round does not
+    prove the brief gap closed (the suite never covered it). If the re-review
+    still sees the gap, the run is honestly not green — run-9f836de2 shipped an
+    unmounted app precisely because no one re-checked the fixer's green."""
+    _agents(monkeypatch)
+    # the reviewer files the same gap on every call — the "fix" never closes it
+    monkeypatch.setattr(
+        orchestrator.reviewer,
+        "run",
+        lambda *a, **k: ReviewVerdict(
+            gaps=[
+                ReviewGap(
+                    claim="served app at /app",
+                    evidence="main.jsx never mounts App; no /app route",
+                    paths=["frontend/src/main.jsx"],
+                )
+            ],
+            summary="app not mounted",
+        ),
+    )
+    registry = FakeRegistry(
+        [
+            _report(passed=1, failed=1),  # per-layer
+            _report(passed=2, green=True),  # green → review runs
+            _report(passed=2, green=True),  # review round: green, must patch
+            _report(passed=2, green=True),  # after the patch — re-review still gaps
+        ]
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    green = asyncio.run(orch.run("run-1", "a to-do app", []))
+    assert green is False
+    assert events.events[-1].green is False
+    # the reviewer was marked stuck on the re-review, not done
+    reviewer_statuses = [
+        e for e in events.events
+        if e.kind == "agent_status" and getattr(e.agent, "id", None) == "reviewer"
+    ]
+    assert any(s.status == "stuck" for s in reviewer_statuses)
+
+
+def test_a_blocked_browser_gate_vetoes_a_ui_run_green(monkeypatch):
+    """B5: run-9f836de2's browser gate silently returned [] (pass) with no
+    Playwright installed, so a UI run went green on an unverified UI. A
+    BLOCKED_HOST_SETUP gate is not fixer-fixable — it must veto the green."""
+    _agents(monkeypatch)
+
+    class BlockedBrowserRegistry(FakeRegistry):
+        async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
+            if tool == "browser_verify":
+                self.calls.append((tool, tool_input))
+                return json.dumps({
+                    "ok": False,
+                    "gaps": [
+                        "browser_verify: blocked_host_setup — Playwright is not "
+                        "installed on this host, so the UI was never exercised"
+                    ],
+                })
+            return await super().call_tool(run_id, tool, tool_input, timeout, agent)
+
+    registry = BlockedBrowserRegistry(
+        [_report(passed=1, failed=1), _report(passed=2, green=True)]
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    # a UI idea so _ui_product is true and the browser gate is required
+    green = asyncio.run(orch.run("run-1", "a react dashboard app with a UI", []))
+    assert green is False
+    assert events.events[-1].green is False
+    # the browser gate ran (and was blocked), and no fixer round tried to "fix" it
+    assert "browser_verify" in [tool for tool, _ in registry.calls]
+    reviewer_statuses = [
+        e for e in events.events
+        if e.kind == "agent_status" and getattr(e.agent, "id", None) == "reviewer"
+    ]
+    assert any(s.status == "stuck" for s in reviewer_statuses)
+
+
+def test_smoke_paths_come_from_contract_page_routes():
+    """Item 6: the runtime smoke must GET the app-shell routes, not just `/`.
+    run-9f836de2 smoked only `/` (Landing, 200) while `/app` 404'd unchecked."""
+    graph_with_routes = TaskGraph.model_validate(
+        {
+            "spec_title": "App",
+            "tasks": [{"id": "t1", "title": "t", "description": "d", "owned_paths": ["app.py"]}],
+            "contract": {
+                "routes": [
+                    {"method": "GET", "path": "/"},
+                    {"method": "GET", "path": "/app"},
+                    {"method": "GET", "path": "/dashboard"},
+                    {"method": "GET", "path": "/api/bots"},          # API: skipped
+                    {"method": "POST", "path": "/app/comments"},     # not GET: skipped
+                    {"method": "GET", "path": "/bots/{bot_id}"},     # param: skipped
+                ]
+            },
+        }
+    )
+    paths = Orchestrator._smoke_paths(graph_with_routes)
+    assert paths == ["/", "/app", "/dashboard"]
+    # no contract → just the root, exactly as before
+    assert Orchestrator._smoke_paths(GRAPH) == ["/"]
+    assert Orchestrator._smoke_paths(None) == ["/"]
+
+
+def test_product_gates_pass_contract_routes_to_runtime_smoke(monkeypatch):
+    _agents(monkeypatch)
+    seen_smoke_paths = []
+
+    class SmokeSpyRegistry(FakeRegistry):
+        async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
+            if tool == "runtime_smoke":
+                self.calls.append((tool, tool_input))
+                seen_smoke_paths.extend(tool_input.get("paths") or [])
+                return json.dumps({"ok": True, "gaps": []})
+            return await super().call_tool(run_id, tool, tool_input, timeout, agent)
+
+    # give the graph a page route the smoke must hit
+    graph_with_app = TaskGraph.model_validate(
+        {
+            "spec_title": "Tasks",
+            "tasks": [
+                {"id": "t1", "title": "Models", "description": "d",
+                 "owned_paths": ["models.py"]},
+                {"id": "t2", "title": "API", "description": "d",
+                 "depends_on": ["t1"], "owned_paths": ["app.py"]},
+            ],
+            "contract": {"routes": [{"method": "GET", "path": "/app"}]},
+        }
+    )
+    monkeypatch.setattr(orchestrator.planner, "run", lambda *a, **k: graph_with_app)
+    registry = SmokeSpyRegistry([_report(passed=1, failed=1), _report(passed=2, green=True)])
+    events = Collector()
+    orch = _orch(registry, events)
+    assert asyncio.run(orch.run("run-1", "a react dashboard app with a UI", [])) is True
+    assert "/app" in seen_smoke_paths
+
+
+def test_a_run_on_the_fallback_route_says_so_up_front(green_setup):
+    """run-9f836de2: 86% of calls were on the fallback route with no signal.
+    The run must name the coding roles on fallback (and the lever) up front."""
+    orch, registry, events = green_setup
+    # TEST_SETTINGS has no open_weight_base_url → coding roles fall back
+    asyncio.run(orch.run("run-1", "a to-do app", []))
+    notes = [
+        e for e in events.events
+        if e.kind == "message_sent" and "fallback" in e.summary.lower()
+    ]
+    assert notes, "expected a routing note naming the fallback route"
+    assert "open_weight_base_url" in notes[0].summary
+    assert "worker" in notes[0].summary
+
+
+def test_no_fallback_note_when_the_open_weight_endpoint_is_set(monkeypatch):
+    _agents(monkeypatch)
+    settings = Settings(
+        _env_file=None,
+        agentic_devs=False,
+        ask_requirements=False,
+        sandbox="host",
+        max_parallel_devs=2,
+        open_weight_base_url="https://example.baseten.co/v1/",
+        open_weight_api_key="open-key",
+    )
+    registry = FakeRegistry([_report(passed=1, failed=1), _report(passed=2, green=True)])
+    events = Collector()
+    orch = Orchestrator(FakeGateway(), registry, events.send, ceiling=200_000, settings=settings)
+    assert asyncio.run(orch.run("run-1", "a to-do app", [])) is True
+    notes = [
+        e for e in events.events
+        if e.kind == "message_sent" and "fallback" in e.summary.lower()
+    ]
+    assert notes == []
+
+
+def test_ui_runs_provision_the_browser_before_the_verify_gate(monkeypatch):
+    """PRP 5.1: for a UI product, the orchestrator must try to provision the
+    browser runtime before the verify gate — a fresh host gets a real browser
+    check instead of a permanent BLOCKED."""
+    _agents(monkeypatch)
+    provision_calls = []
+
+    class ProvisionRegistry(FakeRegistry):
+        async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
+            if tool == "ensure_browser_runtime":
+                self.calls.append((tool, tool_input))
+                provision_calls.append(tool)
+                return json.dumps({
+                    "ready": True,
+                    "playwright_version": "1.49.0",
+                    "chromium_version": "131.0",
+                    "installed": ["chromium"],
+                    "note": "provisioned: chromium",
+                })
+            if tool == "browser_verify":
+                self.calls.append((tool, tool_input))
+                return json.dumps({"ok": True, "gaps": []})
+            return await super().call_tool(run_id, tool, tool_input, timeout, agent)
+
+    registry = ProvisionRegistry(
+        [_report(passed=1, failed=1), _report(passed=2, green=True)]
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    assert asyncio.run(orch.run("run-1", "a react dashboard app with a UI", [])) is True
+    order = [tool for tool, _ in registry.calls]
+    # provisioning ran, and it ran before the verify gate
+    assert "ensure_browser_runtime" in order
+    assert "browser_verify" in order
+    assert order.index("ensure_browser_runtime") < order.index("browser_verify")
+
+
+def test_a_not_ready_browser_runtime_does_not_crash_the_gates(monkeypatch):
+    """A declined/failed install must not crash the gates — the verify gate
+    then reports BLOCKED (and the run is honestly not green for a UI product)."""
+    _agents(monkeypatch)
+
+    class NotReadyRegistry(FakeRegistry):
+        async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
+            if tool == "ensure_browser_runtime":
+                self.calls.append((tool, tool_input))
+                return json.dumps({"ready": False, "note": "playwright package not installed"})
+            if tool == "browser_verify":
+                self.calls.append((tool, tool_input))
+                return json.dumps({
+                    "ok": False,
+                    "gaps": ["browser_verify: blocked_host_setup — Playwright is not installed"],
+                })
+            return await super().call_tool(run_id, tool, tool_input, timeout, agent)
+
+    registry = NotReadyRegistry(
+        [_report(passed=1, failed=1), _report(passed=2, green=True)]
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    green = asyncio.run(orch.run("run-1", "a react dashboard app with a UI", []))
+    assert green is False  # blocked browser vetoes the UI run's green
+
+
 def test_the_review_does_not_run_when_the_suite_never_greens(monkeypatch):
     _agents(monkeypatch)
     review_calls = []
@@ -603,3 +888,106 @@ def test_the_review_does_not_run_when_the_suite_never_greens(monkeypatch):
     green = asyncio.run(orch.run("run-1", "a to-do app", []))
     assert green is False
     assert review_calls == []  # no brief review on a broken suite
+
+
+# ── Milestone A regressions (run-9f836de2) ──
+
+
+def test_a_docs_write_failure_does_not_flip_a_green_run(monkeypatch):
+    """run-9f836de2: the reporter's README write hit the read-before-write
+    ledger and the unhandled ExecutionError failed a 17/17 green run. A docs
+    defect must never change the suite's verdict."""
+    _agents(monkeypatch)
+
+    class FlakyDocsRegistry(FakeRegistry):
+        async def call_tool(self, run_id, tool, tool_input, timeout=300, agent=None):
+            if tool == "write_file" and tool_input.get("path") == "README.md":
+                self.calls.append((tool, tool_input))
+                raise RuntimeError(
+                    "ExecutionError: read README.md with read_file before you change it"
+                )
+            return await super().call_tool(run_id, tool, tool_input, timeout, agent)
+
+    registry = FlakyDocsRegistry(
+        [_report(passed=1, failed=1), _report(passed=2, green=True)]
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    green = asyncio.run(orch.run("run-1", "a to-do app", []))
+    assert green is True  # the suite's verdict stands despite the docs crash
+    assert events.events[-1].green is True
+    # the reporter was marked stuck, not done, so the failure is visible
+    reporter_statuses = [
+        e for e in events.events
+        if e.kind == "agent_status" and getattr(e.agent, "id", None) == "reporter"
+    ]
+    assert any(s.status == "stuck" for s in reporter_statuses)
+
+
+def test_write_files_reads_each_target_before_overwriting(monkeypatch):
+    """The ReadLedger refuses an overwrite the writer never read. write_files
+    must satisfy it by reading each existing target under the same scope first,
+    so orchestrator-driven writes (contract, README, patch) cannot crash."""
+    _agents(monkeypatch)
+    registry = FakeRegistry(
+        [_report(passed=1, failed=1), _report(passed=2, green=True)],
+        files={"README.md": "# old readme\n", "docs/contract.md": "old contract\n"},
+    )
+    events = Collector()
+    orch = _orch(registry, events)
+    assert asyncio.run(orch.run("run-1", "a to-do app", [])) is True
+
+    order = [(tool, inp.get("path")) for tool, inp in registry.calls
+             if tool in ("read_file", "write_file")]
+    # every reporter doc write is preceded by a read of that same path
+    for target in ("README.md", "docs/run-summary.md", "docs/cost-report.md"):
+        write_idx = next(
+            i for i, (tool, path) in enumerate(order)
+            if tool == "write_file" and path == target
+        )
+        assert any(
+            tool == "read_file" and path == target for tool, path in order[:write_idx]
+        ), f"no read_file before write_file for {target}"
+
+
+def test_loop_driven_agent_calls_are_recorded_once(monkeypatch):
+    """run-9f836de2's transcript showed pairs of identical tool calls: the loop
+    logged each call and Orchestrator.call_tool logged it again. Loop-driven
+    closures pass record=False, so each call lands in the transcript exactly once."""
+    from kiln.agents.transcript import TranscriptLog
+
+    transcript = TranscriptLog()
+    registry = FakeRegistry([], files={"a.py": "contents\n"})
+    events = Collector()
+    orch = Orchestrator(
+        FakeGateway(), registry, events.send, ceiling=200_000,
+        settings=TEST_SETTINGS, transcript=transcript,
+    )
+
+    async def scenario():
+        from kiln.agents.roles import Role
+
+        scope = orch._scope("worker-1", "Worker 1", Role.WORKER, ["app.py"])
+        # the loop-fed closure (what _run_layer hands to run_agent_loop)
+        async def call_tool(name, args):
+            return await orch.call_tool("run-1", name, args, agent=scope, record=False)
+        # simulate the loop logging the call itself, then delegating
+        transcript.record(
+            "worker-1", "worker", "tool_call",
+            {"name": "read_file", "args": {"path": "a.py"}},
+        )
+        await call_tool("read_file", {"path": "a.py"})
+        # an orchestrator-driven call (claim_scope) still records here
+        await orch.call_tool("run-1", "claim_scope", {"owned_paths": ["app.py"]}, agent=scope)
+
+    asyncio.run(scenario())
+    reads = [
+        e for e in transcript.for_agent("worker-1")
+        if e.kind == "tool_call" and e.payload.get("name") == "read_file"
+    ]
+    assert len(reads) == 1  # not two
+    claims = [
+        e for e in transcript.for_agent("worker-1")
+        if e.kind == "tool_call" and e.payload.get("name") == "claim_scope"
+    ]
+    assert len(claims) == 1

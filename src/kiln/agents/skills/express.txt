@@ -1,0 +1,38 @@
+# Kiln skill: Express
+
+Apply when the product exposes an Express (Node) service.
+
+## Module system
+
+- Pick **one** module system and stick to it. New projects use ESM
+  (`"type": "module"` in `package.json`, `import`/`export`). Never mix
+  `require()` and `import` in the same codebase.
+
+## Structure & conventions
+
+- `app.use(express.json())` before any routes. Mount domain routers with
+  `app.use('/api', router)`; keep routers per-domain.
+- **Error-handling middleware has exactly four parameters**
+  `(err, req, res, next)` and is registered **last**, after all other
+  `app.use()` calls and routes.
+- Express 5: an async handler that rejects forwards the error to `next()`
+  automatically. In callback-style code pass errors explicitly with
+  `next(err)`. Never let a rejected promise go unhandled — it crashes the
+  process.
+- When `res.headersSent` is already true, delegate to the default handler with
+  `return next(err)`. Run with `NODE_ENV=production` so stack traces are never
+  sent to clients (the default handler hides them in prod).
+- Health route: `GET /health` (or `/healthz`) → `200 {status:"ok"}`, no
+  dependency fan-out, registered **before** any auth middleware (industry
+  convention for cheap liveness).
+
+## Done-definition
+
+- Done means the server boots, the health route returns 200, and errors flow
+  through the four-arg error middleware — not swallowed try/catch or leaked
+  stack traces.
+
+---
+Distilled from the official Express Error Handling guide (expressjs.com, 5.x)
+and the CC0 es-module-nodejs-guidelines cursor rule
+(PatrickJS/awesome-cursorrules).

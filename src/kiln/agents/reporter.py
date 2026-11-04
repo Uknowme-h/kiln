@@ -201,6 +201,7 @@ async def run_agentic(
         "documents are ready, call submit_result with the bundle.",
         review=review,
     )
+    settings = gateway.settings
     try:
         outcome = await run_agent_loop(
             gateway=gateway,
@@ -214,6 +215,11 @@ async def run_agentic(
             max_tokens=definition.max_output_tokens,
             transcript=transcript,
             agent_id=agent_id,
+            # share the one context policy with the coding loops — the reporter's
+            # read-only seam scan reads many files before drafting
+            enable_compaction=settings.enable_compaction,
+            compact_threshold_chars=settings.compact_threshold_chars,
+            prune_protect_chars=settings.prune_protect_chars,
         )
     except AgentLoopError as exc:
         raise ReporterError(str(exc)) from exc

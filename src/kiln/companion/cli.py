@@ -34,6 +34,8 @@ def _apply_sandbox(args) -> object:
     settings = load_settings()
     if args.sandbox is not None:
         settings = settings.model_copy(update={"sandbox": args.sandbox})
+    if getattr(args, "auto_approve", False):
+        settings = settings.model_copy(update={"auto_approve": True})
     if settings.sandbox == "docker":
         problem = _check_docker()
         if problem:
@@ -65,6 +67,15 @@ def _add_shared_flags(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="where tests run: host (default) or docker (opt-in offline sandbox)",
     )
+    parser.add_argument(
+        "--auto-approve",
+        action="store_true",
+        help=(
+            "auto-approve shell/install approval prompts so the run proceeds "
+            "unattended. Only covers shell runs/installs — ask_user questions "
+            "and the plan-approval beat still ask."
+        ),
+    )
 
 
 def _cmd_listen(args) -> int:
@@ -73,6 +84,8 @@ def _cmd_listen(args) -> int:
     print("kiln-companion — listening")
     print(f"environment — {env.describe()}")
     print(f"sandbox — {settings.sandbox}")
+    if settings.auto_approve:
+        print("auto-approve ON — shell/install approvals auto-run; questions and plan still ask")
     print("Paste the pair code from the Kiln UI, then choose a folder in the browser.")
     try:
         raw = input("Pair code: ").strip()
@@ -119,7 +132,10 @@ def _cmd_connect(args) -> int:
     print(f"kiln-companion — workspace {executor.root}")
     print(f"environment — {env.describe()}")
     print(f"sandbox — {settings.sandbox}")
-    print("commands that need approval will appear in this terminal")
+    if settings.auto_approve:
+        print("auto-approve ON — shell/install approvals auto-run; questions and plan still ask")
+    else:
+        print("commands that need approval will appear in this terminal")
     return asyncio.run(
         serve(
             _ws_url(args.server),

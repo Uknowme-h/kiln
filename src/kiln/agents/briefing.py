@@ -6,7 +6,7 @@ blocks so coding agents honor UX/readiness decisions without an extra tool round
 
 from __future__ import annotations
 
-import re
+import json
 
 from kiln.schemas.spec import Spec
 from kiln.schemas.tasks import Task
@@ -14,14 +14,8 @@ from kiln.schemas.tasks import Task
 MAX_DESIGN_CHARS = 6000
 MAX_DISCOVERY_CHARS = 3000
 MAX_SPEC_EXCERPT_CHARS = 8000
-
-_READINESS_TITLES = (
-    "Auth model",
-    "Persistence",
-    "Integration method",
-    "UI direction",
-    "Stack choice",
-)
+MAX_PLAN_MEMO_CHARS = 4000
+MAX_HANDOFF_CHARS = 1500
 
 
 def clip_text(text: str, limit: int) -> str:
@@ -41,24 +35,72 @@ def design_block(design: str | None) -> str:
 
 
 def discovery_digest(discovery: str | None) -> str:
-    """Prefer known readiness headings when present; else free-form clip."""
+    """The whole decisions log, clipped.
+
+    Discovery is free-form (the analyst invents its own topics), so filtering
+    it to a fixed set of headings dropped every decision outside that set.
+    """
     raw = (discovery or "").strip()
     if not raw:
         return ""
-    parts: list[str] = []
-    for title in _READINESS_TITLES:
-        pattern = re.compile(
-            rf"(##\s*{re.escape(title)}\b.*?)(?=\n##\s|\Z)",
-            re.IGNORECASE | re.DOTALL,
-        )
-        match = pattern.search(raw)
-        if match:
-            parts.append(match.group(1).strip())
-    if not parts:
-        # Free-form decisions log (agent-driven clarify) — clip the whole file.
-        parts = [raw]
-    digest = "\n\n".join(parts)
-    return f"\n\n<discovery>\n{clip_text(digest, MAX_DISCOVERY_CHARS)}\n</discovery>"
+    return f"\n\n<discovery>\n{clip_text(raw, MAX_DISCOVERY_CHARS)}\n</discovery>"
+
+
+MAX_INVENTORY_ENTRIES = 60
+
+
+def existing_workspace_block(inventory: list[str] | None) -> str:
+    """Announce a non-empty workspace so agents extend it instead of re-specifying it."""
+    if not inventory:
+        return ""
+    listed = "\n".join(f"- {entry}" for entry in inventory[:MAX_INVENTORY_ENTRIES])
+    if len(inventory) > MAX_INVENTORY_ENTRIES:
+        listed += f"\n- … (+{len(inventory) - MAX_INVENTORY_ENTRIES} more)"
+    return (
+        "\n\n<existing_workspace>\n"
+        "The workspace already contains a project (top level below). Treat the "
+        "brief as a change to this project: read what exists before deciding, "
+        "keep what it already establishes (stack, layout, conventions) unless "
+        "the brief changes it, and build the new or changed behavior — not a "
+        "rebuild from scratch.\n"
+        f"{listed}\n"
+        "</existing_workspace>"
+    )
+
+
+def plan_memo_block(plan: str | None) -> str:
+    """The planner's docs/plan.md: shared seams, DOM ids, frozen mounts."""
+    body = (plan or "").strip()
+    if not body:
+        return ""
+    return f"\n\n<plan_memo>\n{clip_text(body, MAX_PLAN_MEMO_CHARS)}\n</plan_memo>"
+
+
+def dependency_handoff_block(handoffs: list[dict] | None) -> str:
+    """What each upstream task's worker reported: summary, what works, gaps.
+
+    Paths alone told a dependent worker where the files were, not that the
+    seam it builds on was left half-finished.
+    """
+    if not handoffs:
+        return ""
+    parts = []
+    for handoff in handoffs:
+        lines = [f"task {handoff.get('task_id', '?')}: {handoff.get('summary', '').strip()}"]
+        if (handoff.get("what_works") or "").strip():
+            lines.append(f"what works: {handoff['what_works'].strip()}")
+        gaps = [gap for gap in handoff.get("known_gaps") or [] if gap.strip()]
+        if gaps:
+            lines.append("known gaps:\n" + "\n".join(f"- {gap}" for gap in gaps))
+        parts.append(clip_text("\n".join(lines), MAX_HANDOFF_CHARS))
+    return (
+        "\n\n<dependency_handoff>\n"
+        "What the workers of the tasks you depend on reported. Their known gaps "
+        "are real: do not assume those seams are finished — read the files, and "
+        "record a known_gap if you are blocked by one.\n\n"
+        + "\n\n".join(parts)
+        + "\n</dependency_handoff>"
+    )
 
 
 def product_briefing_blocks(
@@ -98,8 +140,6 @@ def spec_excerpt_for_task(spec: Spec, task: Task) -> str:
         "acceptance_criteria": [c.model_dump() for c in criteria],
         "file_plan": [f.model_dump() for f in files],
     }
-    import json
-
     text = json.dumps(payload, indent=2)
     return f"\n\n<spec_excerpt>\n{clip_text(text, MAX_SPEC_EXCERPT_CHARS)}\n</spec_excerpt>"
 

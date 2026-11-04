@@ -26,10 +26,13 @@ TOOLS = (
     "probe_stack",
     "install_tool",
     "install_deps",
+    "scaffold_framework",
     "run_tests",
     "smoke_check",
     "served_ui_audit",
     "runtime_smoke",
+    "ensure_browser_runtime",
+    "browser_verify",
     "claim_scope",
     "release_scope",
     "vendor_deps",  # only meaningful for the optional Docker sandbox
@@ -53,6 +56,8 @@ class Hello(BaseModel):
     version: str = Field(min_length=1)
     # OS, shell, architecture, and the runtimes found on PATH (see companion.shellenv)
     environment: dict = Field(default_factory=dict)
+    # started with --auto-approve, so the floor can show the toggle's real state
+    auto_approve: bool = False
 
 
 class HelloAck(BaseModel):
@@ -112,6 +117,9 @@ class ToolProgress(BaseModel):
     lines: list[str] = Field(default_factory=list)
     note: str = ""
     allow_run_scope: bool = False
+    # auto-approve is on: the request is resolved without waiting for anyone,
+    # so the floor logs it instead of popping a dialog
+    auto_approved: bool = False
     # ask_user: structured questions for the floor dialog (chips + free text)
     questions: list[QuestionPayload] = Field(default_factory=list)
 
@@ -125,9 +133,20 @@ class ApprovalAnswer(BaseModel):
 
     type: Literal["approval_answer"] = "approval_answer"
     approved: bool = True
-    scope: str = "once"  # "once" or "run"; coerced down if the request wasn't low-risk
+    # "once", "run" (coerced down if the request wasn't low-risk), or "all":
+    # allow this one and switch auto-approve on for the rest of the run
+    scope: str = "once"
     feedback: str = ""
     answers: list[list[str]] | None = None
+
+
+class AutoApprove(BaseModel):
+    """The web floor flipping auto-approve for command approvals, server → companion.
+
+    Same reach as --auto-approve: the plan beat and ask_user still ask."""
+
+    type: Literal["auto_approve"] = "auto_approve"
+    enabled: bool
 
 
 class Ping(BaseModel):
@@ -138,7 +157,9 @@ class Pong(BaseModel):
     type: Literal["pong"] = "pong"
 
 
-ServerMessage = Annotated[HelloAck | ToolCall | ApprovalAnswer | Ping, Field(discriminator="type")]
+ServerMessage = Annotated[
+    HelloAck | ToolCall | ApprovalAnswer | AutoApprove | Ping, Field(discriminator="type")
+]
 CompanionMessage = Annotated[
     Hello | ToolResult | ToolProgress | Pong, Field(discriminator="type")
 ]

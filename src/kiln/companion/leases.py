@@ -46,6 +46,29 @@ class LeaseTable:
         self._labels: dict[str, str] = {}
         self._lock = threading.Lock()
 
+    # ── rehydration (survive a companion respawn mid-build) ─────────────────
+    # A dropped companion loses this table; a respawned one must restore the
+    # claims the server believes are still active, or every in-scope write
+    # fails with LeaseError (run-d918940d died exactly this way). The workspace
+    # file is a cache; the server's claim replay on re-attach is the authority.
+    def snapshot(self) -> dict[str, dict]:
+        with self._lock:
+            return {
+                agent: {"label": self._labels.get(agent, agent), "owned": list(prefixes)}
+                for agent, prefixes in self._prefixes.items()
+            }
+
+    def restore(self, snapshot: dict[str, dict]) -> None:
+        with self._lock:
+            for agent, info in (snapshot or {}).items():
+                owned = info.get("owned") or []
+                if not owned:
+                    continue
+                self._prefixes[agent] = tuple(
+                    _normalize_lease(path) for path in owned
+                )
+                self._labels[agent] = info.get("label") or agent
+
     def claim(self, agent_id: str, label: str, owned: list[str]) -> None:
         """Lease paths to an agent. Re-claiming the same paths is a no-op; colliding with
         another agent's lease is an error."""
@@ -146,3 +169,15 @@ class ReadLedger:
         if seen != digest(current_text):
             return f"{path} changed since you read it; read it again before editing"
         return None
+
+    # ── rehydration ──────────────────────────────────────────────────────────
+    def snapshot(self) -> dict[str, str]:
+        with self._lock:
+            return {f"{agent}|{path}": digest_ for (agent, path), digest_ in self._seen.items()}
+
+    def restore(self, snapshot: dict[str, str]) -> None:
+        with self._lock:
+            for key, digest_ in (snapshot or {}).items():
+                agent, sep, path = key.partition("|")
+                if sep and digest_:
+                    self._seen[(agent, path)] = digest_

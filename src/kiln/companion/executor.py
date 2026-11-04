@@ -12,7 +12,9 @@ import fnmatch
 import hashlib
 import json
 import re
+import shutil
 import threading
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
@@ -33,6 +35,7 @@ from kiln.companion.prompt import ApprovalPrompt, ApprovalRequest, Question
 from kiln.companion.protocol import AgentScope, ToolProgress
 from kiln.companion.shellenv import EnvironmentInfo, detect_environment, refresh_windows_path
 from kiln.companion.web import fetch_url, search_web
+from kiln.companion.offload import maybe_offload_tool_output
 from kiln.config import Settings
 from kiln.paths import safe_relative_path
 from kiln.permissions import Ruleset
@@ -42,11 +45,23 @@ from kiln.stacks.profiles import (
     RESULTS_FILE,
     install_command,
     parse_version,
+    plan_node_suite_manifest,
     profile_for,
+    write_manifest,
+)
+from kiln.stacks.scaffold_recipes import (
+    npm_package_name,
+    recipe_for,
+    scaffold_argv,
+    scaffold_files,
 )
 from kiln.tools import schemas as tool_schemas
 
 Notify = Callable[[ToolProgress], None]
+
+# read_file returns at most this much per call (whole lines), comfortably under
+# the agent loop's 20k clip so a read is never trimmed mid-file.
+READ_MAX_CHARS = 16_000
 
 # Re-exported so the client can catch refusals without importing permissions.
 __all__ = ["ExecutionError", "Executor", "PermissionDenied", "looks_like_kiln_repo"]
@@ -54,6 +69,26 @@ __all__ = ["ExecutionError", "Executor", "PermissionDenied", "looks_like_kiln_re
 
 class ExecutionError(RuntimeError):
     """A tool input was invalid or the execution failed."""
+
+
+def _merge_tree(source: Path, target: Path, prefix: str = "") -> list[str]:
+    """Move ``source``'s contents into ``target`` without overwriting anything.
+
+    Entries missing from ``target`` are moved whole (a rename on one volume);
+    folders present on both sides are merged; files present on both sides
+    keep the target's copy. Returns the kept paths, relative to ``target``.
+    """
+    kept: list[str] = []
+    for entry in sorted(source.iterdir(), key=lambda p: p.name):
+        destination = target / entry.name
+        rel = f"{prefix}{entry.name}"
+        if not destination.exists():
+            shutil.move(str(entry), str(destination))
+        elif entry.is_dir() and destination.is_dir():
+            kept.extend(_merge_tree(entry, destination, f"{rel}/"))
+        else:
+            kept.append(rel)
+    return kept
 
 
 def _role_rules(role: str) -> Ruleset:
@@ -113,7 +148,11 @@ class Executor:
         # remote=True: approvals can be answered from the web floor as well as
         # this terminal; whichever the user answers first wins
         self.prompt = prompt or ApprovalPrompt(remote=True)
-        self.permissions = PermissionEngine(self.prompt)
+        # auto_approve covers ONLY shell/install-style approvals (see
+        # PermissionEngine); ask_user questions and the plan beat stay manual.
+        self.permissions = PermissionEngine(
+            self.prompt, auto_approve=bool(getattr(self.settings, "auto_approve", False))
+        )
         self.leases = LeaseTable()
         self.locks = KeyedLocks()
         self.reads = ReadLedger()
@@ -143,7 +182,43 @@ class Executor:
             self.background.stop_all()
         self.root = root
         self.background = BackgroundJobs(self.root / ".kiln" / "jobs")
+        self._restore_scope_state()
         return self.root
+
+    # ── scope-state rehydration (survive a respawn mid-build) ───────────────
+    # The workspace file is a cache of who may write where and what they last
+    # read. A respawned companion reloads it so an in-scope write is not
+    # refused as LeaseError / never-read. The server's claim replay on
+    # re-attach remains the authority; this file just keeps the companion
+    # consistent between attach and that replay.
+    _SCOPE_STATE = ".kiln/scope-state.json"
+
+    def _restore_scope_state(self) -> None:
+        path = (self.root or Path()) / self._SCOPE_STATE
+        if not self.root or not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        self.leases.restore(data.get("leases") or {})
+        self.reads.restore(data.get("reads") or {})
+
+    def _persist_scope_state(self) -> None:
+        if self.root is None:
+            return
+        path = self.root / self._SCOPE_STATE
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps(
+                    {"leases": self.leases.snapshot(), "reads": self.reads.snapshot()},
+                    indent=1,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass  # best-effort cache; the server replay is the authority
 
     def close(self) -> None:
         if self.background is not None:
@@ -161,10 +236,22 @@ class Executor:
 
         if getattr(answer, "answers", None) is not None:
             return self.prompt.answer_questions_remotely(list(answer.answers))
-        scope = answer.scope if answer.scope in ("once", "run") else "once"
+        scope = answer.scope if answer.scope in ("once", "run", "all") else "once"
+        if scope == "all":
+            # "allow all": approve this one and auto-approve the rest of the
+            # run. Same reach as --auto-approve — the plan and ask_user still ask.
+            if not answer.approved:
+                scope = "once"
+            else:
+                self.set_auto_approve(True)
+                scope = "run"  # coerced to once if this command isn't rememberable
         return self.prompt.answer_remotely(
             Reply(bool(answer.approved), scope, str(answer.feedback or ""))
         )
+
+    def set_auto_approve(self, enabled: bool) -> None:
+        """Flip auto-approve for command approvals (from the web floor)."""
+        self.permissions.auto_approve = bool(enabled)
 
     def environment_report(self) -> dict:
         return self.env.to_dict()
@@ -236,10 +323,12 @@ class Executor:
             "probe_stack": self._probe_stack,
             "install_tool": self._install_tool,
             "install_deps": self._install_deps,
+            "scaffold_framework": self._scaffold_framework,
             "run_tests": self._run_tests,
             "smoke_check": self._smoke_check,
             "served_ui_audit": self._served_ui_audit,
             "runtime_smoke": self._runtime_smoke,
+            "ensure_browser_runtime": self._ensure_browser_runtime,
             "browser_verify": self._browser_verify,
             "diagnostics": self._diagnostics,
             "claim_scope": self._claim_scope,
@@ -253,7 +342,20 @@ class Executor:
             raise ExecutionError(f"unknown tool: {tool}")
         if tool not in ("browse_host", "set_workspace"):
             self._require_root()
-        return handler(tool_input, agent, call_id, notify)
+        output = handler(tool_input, agent, call_id, notify)
+        if not isinstance(output, str):
+            return output
+        if self.root is None:
+            return output
+        agent_id, _, _, _, _ = self._agent_bits(agent)
+        return maybe_offload_tool_output(
+            self.root,
+            tool=tool,
+            output=output,
+            agent_id=agent_id,
+            call_id=call_id or "",
+            threshold=int(self.settings.tool_offload_chars),
+        )
 
     # ── listen-mode host browse / workspace lock ─────────────────────────────
 
@@ -325,18 +427,49 @@ class Executor:
             call_id=call_id,
             notify=notify,
         )
-        _, path = self._resolve(validated.path)
+        relative, path = self._resolve(validated.path)
         if not path.is_file():
+            # A peer that is actively leased this path may simply not have
+            # written it yet (parallel workers). That is information, not an
+            # error — run-9f836de2 burned worker steps crash-looping on reads
+            # of files a peer was still producing. Return a soft signal so the
+            # model can wait, stub, or record a gap instead of "recovering".
+            owner = self.leases.owner_of(relative)
+            if owner is not None and owner[0] != agent_id:
+                return (
+                    f"{relative} does not exist yet — it is owned by {owner[1]}, "
+                    "who is still working. Do not retry in a loop: code against the "
+                    "contract stub, check list_peers for what they have written, or "
+                    "record a known_gap if you depend on it."
+                )
             raise ExecutionError(f"no such file in the workspace: {validated.path}")
         text = path.read_text(encoding="utf-8")
-        self.reads.record(agent_id, validated.path, text)
+        self.reads.record(agent_id, relative, text)
+        self._persist_scope_state()
         lines = text.splitlines(keepends=True)
-        if validated.offset is not None or validated.limit is not None:
-            start = (validated.offset or 1) - 1
-            end = start + validated.limit if validated.limit else len(lines)
-            chunk = "".join(lines[start:end])
-            return f"# lines {start + 1}-{min(end, len(lines))} of {len(lines)}\n{chunk}"
-        return text
+        ranged = validated.offset is not None or validated.limit is not None
+        start = (validated.offset or 1) - 1 if ranged else 0
+        end = start + validated.limit if (ranged and validated.limit) else len(lines)
+        end = min(end, len(lines))
+        chunk = "".join(lines[start:end])
+        if len(chunk) > READ_MAX_CHARS:
+            # Return whole lines up to the budget plus an exact continuation
+            # point — never a mid-file trim and never an offload stub.
+            used, cut = 0, start
+            for index in range(start, end):
+                size = len(lines[index])
+                if used + size > READ_MAX_CHARS and index > start:
+                    break
+                used += size
+                cut = index + 1
+            return (
+                f"# lines {start + 1}-{cut} of {len(lines)} "
+                f"(more below — continue with offset={cut + 1})\n"
+                + "".join(lines[start:cut])
+            )
+        if not ranged:
+            return text
+        return f"# lines {start + 1}-{end} of {len(lines)}\n{chunk}"
 
     def _list_dir(self, tool_input, agent, call_id, notify) -> str:
         validated = tool_schemas.ListDir.model_validate(tool_input)
@@ -408,7 +541,13 @@ class Executor:
             if not path.is_file():
                 continue
             rel = path.relative_to(self.root).as_posix()
-            if validated.include and not fnmatch.fnmatch(rel, validated.include):
+            # match the relative path or the bare name: `include: "page.tsx"`
+            # against `app/page.tsx` used to miss, and the agent concluded its
+            # own freshly written file was empty (run-9bbe61f0)
+            if validated.include and not (
+                fnmatch.fnmatch(rel, validated.include)
+                or fnmatch.fnmatch(path.name, validated.include)
+            ):
                 continue
             try:
                 text = path.read_text(encoding="utf-8")
@@ -445,6 +584,8 @@ class Executor:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(validated.content, encoding="utf-8")
             self.reads.record(agent_id, relative, validated.content)
+        self._note_peer_write(agent_id, relative)
+        self._persist_scope_state()
         msg = f"wrote {relative} ({len(validated.content)} bytes)"
         diag = self._post_edit_diagnostics(relative)
         return f"{msg}\n{diag}" if diag else msg
@@ -487,6 +628,8 @@ class Executor:
             )
             path.write_text(updated, encoding="utf-8")
             self.reads.record(agent_id, relative, updated)
+        self._note_peer_write(agent_id, relative)
+        self._persist_scope_state()
         msg = f"edited {relative} ({count} replacement{'s' if count != 1 else ''})"
         diag = self._post_edit_diagnostics(relative)
         return f"{msg}\n{diag}" if diag else msg
@@ -856,35 +999,175 @@ class Executor:
     def _install_deps(self, tool_input, agent, call_id, notify) -> str:
         stack_id = str(tool_input.get("stack_id") or self.stack_id)
         profile = profile_for(stack_id)
-        commands = profile.install_deps_commands(self.root, self.env.os, self._python_argv)
+        # multi-root: install at the named root (a node frontend/ or a python
+        # backend/); default stays the workspace root for single-root apps
+        rel_root, root_path = self._resolve(str(tool_input.get("root") or "."))
+        # The suite runs at the workspace root. For a node suite that root must
+        # be able to run vitest whatever the scaffold left there (or nothing).
+        manifest_plan: dict | None = None
+        manifest_notes: list[str] = []
+        if stack_id == "node" and rel_root in ("", "."):
+            try:
+                manifest_plan, manifest_notes = plan_node_suite_manifest(
+                    root_path, npm_package_name(self._require_root().name)
+                )
+            except ValueError as exc:
+                raise ExecutionError(str(exc)) from exc
+        commands = profile.install_deps_commands(root_path, self.env.os, self._python_argv)
+        if manifest_notes and not commands:
+            commands = [["npm", "install"]]
         if not commands:
-            return f"nothing to install for {stack_id}"
+            return f"nothing to install for {stack_id} at {rel_root}"
         agent_id, label, _, _, _ = self._agent_bits(agent)
         self.permissions.authorize(
             agent_id=agent_id,
             agent_label=label,
             action="install",
-            resource=f"deps:{stack_id}",
+            resource=f"deps:{stack_id}:{rel_root}",
             request=ApprovalRequest(
                 agent_label=label,
                 action="install",
-                lines=[" ".join(cmd) for cmd in commands],
+                lines=[f"(in {rel_root}) package.json: {note}" for note in manifest_notes]
+                + [f"(in {rel_root}) " + " ".join(cmd) for cmd in commands],
                 shell=self.env.shell.label,
-                note="install the project's dependencies into the workspace",
+                note=f"install the project's dependencies into {rel_root}",
                 allow_run_scope=False,
             ),
             call_id=call_id,
             notify=notify,
         )
-        outputs = []
+        if manifest_notes and manifest_plan is not None:
+            write_manifest(root_path, manifest_plan)
+        outputs = [f"package.json: {note}" for note in manifest_notes]
         with self.install_lock:
             for cmd in commands:
-                result = run_argv(cmd, self.root, timeout=600)
+                result = run_argv(cmd, root_path, timeout=600)
                 outputs.append(result.render(600))
                 if not result.ok:
                     raise ExecutionError("\n".join(outputs))
-        self.stack_id = stack_id
+        if rel_root in ("", "."):
+            self.stack_id = stack_id
         return "\n".join(outputs)
+
+    def _scaffold_framework(self, tool_input, agent, call_id, notify) -> str:
+        """Deterministically scaffold one workspace root from an allowlisted recipe.
+
+        Agents never run a create CLI themselves. An ``argv`` recipe runs the
+        pinned official command here (stdin closed, CI=1); a ``template``
+        recipe writes its pinned files under the same lease checks as any
+        other write. Refuses a root that already has the recipe's manifest
+        unless ``options.overwrite`` is true.
+        """
+        self._require_root()  # fails clearly when no workspace is bound
+        framework = str(tool_input.get("framework") or "").strip()
+        raw_root = str(tool_input.get("root") or "").strip() or "."
+        options = tool_input.get("options") if isinstance(tool_input.get("options"), dict) else {}
+        overwrite = bool((options or {}).get("overwrite"))
+        recipe = recipe_for(framework)  # raises ValueError on unknown framework
+        rel_root, root_path = self._resolve(raw_root)
+        manifest = root_path / recipe.manifest
+        if manifest.exists() and not overwrite:
+            raise ExecutionError(
+                f"root {rel_root!r} is already scaffolded ({recipe.manifest} exists); "
+                "refusing to overwrite"
+            )
+        agent_id, label, _, _, _ = self._agent_bits(agent)
+        if recipe.kind == "argv":
+            return self._scaffold_staged(
+                framework, recipe, rel_root, root_path, options, agent_id, label, call_id, notify
+            )
+        # template recipe: the companion writes the pinned tree
+        files = scaffold_files(framework, rel_root)
+        for rel_path, content in files:
+            _, candidate = self._resolve(rel_path)
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(content, encoding="utf-8")
+        written = ", ".join(path for path, _ in files)
+        return f"scaffolded {framework} at {rel_root} ({len(files)} files: {written})"
+
+    def _scaffold_staged(
+        self, framework, recipe, rel_root, root_path, options, agent_id, label, call_id, notify
+    ) -> str:
+        """Run an official create CLI in a staging folder, then move its output in.
+
+        Create CLIs name the package after their target folder and refuse a
+        non-empty target. Running them on the root in place failed for any
+        folder npm cannot name (``Notescalidraw``: capitals) and for any root
+        that already holds Kiln's own files (``.kiln/``, ``docs/discovery.md``)
+        — run-9bbe61f0. The staging child is a fresh, empty folder with an
+        npm-valid name derived from the root's folder name, so the package
+        name stays meaningful. Staging lives under the workspace's ``.kiln/`` so
+        the move is a same-volume rename (node_modules is never copied).
+        Files that already exist in the root are kept, never overwritten.
+        """
+        workspace = self._require_root()
+        folder = root_path.name if rel_root not in ("", ".") else workspace.name
+        package = npm_package_name(folder)
+        argv = scaffold_argv(framework, package, options)
+        staging = workspace / ".kiln" / "scaffold" / f"{framework}-{uuid.uuid4().hex[:8]}"
+        self.permissions.authorize(
+            agent_id=agent_id,
+            agent_label=label,
+            action="install",
+            resource=f"scaffold:{framework}",
+            request=ApprovalRequest(
+                agent_label=label,
+                action="install",
+                lines=[" ".join(argv)],
+                shell=self.env.shell.label,
+                note=f"{recipe.note} into {rel_root!r} (built in a staging folder, then moved in)",
+                allow_run_scope=False,
+            ),
+            call_id=call_id,
+            notify=notify,
+        )
+        staging.mkdir(parents=True, exist_ok=True)
+        try:
+            with self.install_lock:
+                # stdin is already DEVNULL; CI/npm_config_yes kill any prompt
+                result = run_argv(
+                    argv,
+                    staging,
+                    timeout=600,
+                    env=scrubbed_env(extra={"CI": "1", "npm_config_yes": "1"}),
+                )
+            refresh_windows_path()
+            if not result.ok:
+                raise ExecutionError(result.render(600))
+            built = staging / package
+            if not built.is_dir():
+                raise ExecutionError(
+                    f"{framework} scaffolder finished but produced no {package}/ folder\n"
+                    + result.render(600)
+                )
+            root_path.mkdir(parents=True, exist_ok=True)
+            kept = _merge_tree(built, root_path)
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
+            try:
+                staging.parent.rmdir()  # .kiln/scaffold, when no other staging is live
+            except OSError:
+                pass
+        if not (root_path / recipe.manifest).exists():
+            raise ExecutionError(
+                f"{framework} scaffold moved into {rel_root!r} but {recipe.manifest} is missing"
+            )
+        note = f"\nkept existing (not overwritten): {', '.join(kept)}" if kept else ""
+        return f"scaffolded {framework} at {rel_root} (package {package}){note}\n{result.render(600)}"
+
+    def smoke_root(self, stack_id: str, root: str) -> str:
+        """Compile/type-check a scaffolded secondary root (no real suite yet)."""
+        profile = profile_for(stack_id)
+        commands = profile.smoke_commands_for_root(
+            self._require_root(), root, self.env.os, self._python_argv
+        )
+        outputs = []
+        for cmd in commands:
+            result = run_argv(cmd, self._require_root(), timeout=300)
+            outputs.append(result.render(300))
+            if not result.ok:
+                raise ExecutionError("\n".join(outputs))
+        return "\n".join(outputs) or f"nothing to smoke at {root!r}"
 
     def _run_tests(self, tool_input, agent, call_id, notify) -> str:
         stack_id = str(tool_input.get("stack_id") or self.stack_id)
@@ -892,6 +1175,14 @@ class Executor:
             report = run_tests_docker(self.root, self.settings)
             return report.model_dump_json()
         profile = profile_for(stack_id)
+        if stack_id == "node" and not (self.root / "node_modules" / "vitest").is_dir():
+            # without this, npx answers with "canceled due to missing packages"
+            # and the run dies on noise that does not name the cause
+            raise ExecutionError(
+                "vitest is not installed at the workspace root, so the suite cannot "
+                "run. install_deps (stack node, root .) adds it to package.json and "
+                "installs it."
+            )
         cmd = profile.test_command(self.root, self.env.os, self._python_argv)
         agent_id, label, _, _, _ = self._agent_bits(agent)
         self.permissions.authorize(
@@ -990,6 +1281,49 @@ class Executor:
         gaps = run_runtime_smoke(self.root, paths=paths)
         return json.dumps({"ok": not gaps, "gaps": gaps})
 
+    def _ensure_browser_runtime(self, tool_input, agent, call_id, notify) -> str:
+        """Provision Playwright + Chromium for UI product gates (PRP Phase 5.1).
+
+        Detection is read-only and free. Installation runs only when the user
+        approves — a declined or failed install returns ready=False (the
+        browser gate then reports BLOCKED_HOST_SETUP rather than silently pass).
+        """
+        from kiln.product.browser_runtime import ensure_browser_runtime
+
+        agent_id, label, _, _, _ = self._agent_bits(agent)
+        self.permissions.authorize(
+            agent_id=agent_id,
+            agent_label=label,
+            action="install",
+            resource="playwright chromium",
+            request=ApprovalRequest(
+                agent_label=label,
+                action="install",
+                lines=[
+                    "pip install playwright (if missing)",
+                    "playwright install chromium (if missing)",
+                ],
+                shell=self.env.shell.label,
+                note="provision the pinned headless browser so the UI product "
+                "gates can actually run; skipping leaves them BLOCKED",
+                allow_run_scope=True,
+            ),
+            remember_key="ensure_browser_runtime",
+            call_id=call_id,
+            notify=notify,
+        )
+        with self.install_lock:
+            status = ensure_browser_runtime(install=True)
+        return json.dumps(
+            {
+                "ready": status.ready,
+                "playwright_version": status.playwright_version,
+                "chromium_version": status.chromium_version,
+                "installed": status.installed,
+                "note": status.note,
+            }
+        )
+
     def _browser_verify(self, tool_input, agent, call_id, notify) -> str:
         from kiln.product.browser_verify import run_browser_verify
 
@@ -1041,6 +1375,7 @@ class Executor:
         }
         with self._peers_lock:
             self._peers[agent_id] = peer
+        self._persist_scope_state()
         return f"leased {', '.join(owned)} to {label}"
 
     def _release_scope(self, tool_input, agent, call_id, notify) -> str:
@@ -1048,7 +1383,17 @@ class Executor:
         self.leases.release(agent_id)
         with self._peers_lock:
             self._peers.pop(agent_id, None)
+        self._persist_scope_state()
         return f"released lease for {label}"
+
+    def _note_peer_write(self, agent_id: str, relative: str) -> None:
+        """Keep list_peers honest: it promises the files each peer has written."""
+        with self._peers_lock:
+            peer = self._peers.get(agent_id)
+            if peer is not None:
+                files = peer.setdefault("files", [])
+                if relative not in files:
+                    files.append(relative)
 
     def _list_peers(self, tool_input, agent, call_id, notify) -> str:
         with self._peers_lock:
@@ -1062,7 +1407,7 @@ class Executor:
         plan. The plan summary is shown in this terminal; a refusal can carry
         feedback that goes back to the planner for one revision."""
         agent_id, label, _, _, _ = self._agent_bits(agent)
-        lines = [str(line) for line in (tool_input.get("lines") or [])][:14]
+        lines = [str(line) for line in (tool_input.get("lines") or [])][:40]
         if not lines:
             lines = ["(the planner produced no summary)"]
         self.permissions.authorize(

@@ -12,15 +12,22 @@ def _seat_fn_source() -> str:
     )
 
 
-def test_scene_js_exports_unique_worker_seat_math():
-    """Sanity: workerSeat grows instead of modulo-wrapping into fixer desks."""
+def test_scene_js_keeps_workers_off_the_fixed_desks():
+    """Workers hot-desk from their own pool; the fixer and reviewer keep fixed
+    seats that no worker can be given, and nothing wraps by modulo."""
     src = _seat_fn_source()
-    assert "WORKER_ONLY_SEATS" in src
-    assert "% WORKER_SEATS.length" not in src
-    assert "workerSeat" in src
-    # fixer/reviewer keep fixed coords, not shared WORKER_SEATS indices
-    assert re.search(r"fixer:\s*\{\s*x:\s*220,\s*y:\s*545", src)
-    assert re.search(r"reviewer:\s*\{\s*x:\s*480,\s*y:\s*545", src)
+    fixed = re.search(r"const FIXED_SEATS = \{(.*?)\};", src, re.S)
+    build = re.search(r"const BUILD_SEATS = \[(.*?)\];", src, re.S)
+    assert fixed and build
+    for role in ("fixer", "reviewer", "requirements", "planner", "test_author", "reporter"):
+        assert re.search(rf"\b{role}: seat\(", fixed.group(1)), role
+    assert "fixer" not in build.group(1) and "reviewer" not in build.group(1)
+    # the six build desks are distinct grid cells
+    cells = re.findall(r'seat\("b\d", (COL\.\w+), (ROW\.\w+)', build.group(1))
+    assert len(cells) == 6 and len(set(cells)) == 6
+    # a worker's seat comes from the build pool (or the table overflow), never modulo
+    assert "BUILD_SEATS.find" in src
+    assert "% BUILD_SEATS.length" not in src
 
 
 def test_monotonic_worker_ids_in_orchestrator():

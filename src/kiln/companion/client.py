@@ -17,6 +17,7 @@ from kiln import __version__
 from kiln.companion.executor import Executor, PermissionDenied
 from kiln.companion.protocol import (
     ApprovalAnswer,
+    AutoApprove,
     Hello,
     Pong,
     ToolCall,
@@ -27,6 +28,9 @@ from kiln.companion.protocol import (
 logger = logging.getLogger("kiln.companion")
 
 HEARTBEAT_SECONDS = 5.0
+AUTO_ON_FROM_FLOOR = (
+    "auto-approve ON (from the web floor) — commands auto-run; questions and plan still ask"
+)
 
 
 async def serve(url: str, code: str, workspace_label: str, executor: Executor) -> int:
@@ -44,11 +48,18 @@ async def serve(url: str, code: str, workspace_label: str, executor: Executor) -
         workspace=workspace_label or "",
         version=__version__,
         environment=executor.environment_report(),
+        auto_approve=bool(executor.permissions.auto_approve),
     )
     outbox: asyncio.Queue = asyncio.Queue()
     in_flight: set[asyncio.Task] = set()
     writer: asyncio.Task | None = None
     try:
+        # The default keepalive stays on: it is what detects a dead server. The
+        # 1006 drops seen in eval runs came from the SERVER's event loop being
+        # blocked by a synchronous model call (planner task graph, 60s+), so it
+        # could not answer these pings. Fixed at the source — model calls run
+        # in asyncio.to_thread, and Gateway.complete logs loudly if called on a
+        # loop (tests/test_event_loop_blocking.py, scripts/ws_slow_model_check.py).
         async with websockets.connect(url, max_size=20_000_000) as ws:
             await ws.send(hello.model_dump_json())
             raw = await asyncio.wait_for(ws.recv(), timeout=30)
@@ -127,6 +138,20 @@ def _dispatch(payload: str, executor: Executor, outbox: asyncio.Queue) -> asynci
             return None
         if executor.answer_approval(answer):
             print("approval answered from the web floor")
+        if answer.scope == "all" and answer.approved:
+            print(AUTO_ON_FROM_FLOOR)
+        return None
+    if kind == "auto_approve":
+        try:
+            toggle = AutoApprove.model_validate(message)
+        except Exception:
+            logger.warning("dropped a malformed auto_approve")
+            return None
+        executor.set_auto_approve(toggle.enabled)
+        if toggle.enabled:
+            print(AUTO_ON_FROM_FLOOR)
+        else:
+            print("auto-approve OFF (from the web floor) — commands ask again")
         return None
     if kind != "tool_call":
         return None

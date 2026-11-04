@@ -1,0 +1,39 @@
+# Kiln skill: API contract quality
+
+Apply when the product exposes any HTTP API. Keeps routes and shapes stable
+and honest.
+
+## Error handling
+
+- One error envelope across the whole API, e.g.
+  `{ statusCode, message, path, timestamp }` or RFC 7807 problem+json.
+  Services throw domain exceptions; the HTTP edge (exception handler /
+  middleware / filter) maps them to status codes. Stack traces never reach the
+  client.
+
+## Shape & schema
+
+- Every endpoint declares its response schema (`response_model=` in FastAPI,
+  DTOs/serializers elsewhere) so the generated OpenAPI contract is faithful.
+  Document 4xx shapes as explicit extra responses.
+- Response DTOs are decoupled from ORM/DB entities, so a schema change in
+  storage does not silently change the public API.
+
+## Versioning & stability
+
+- Version by path prefix (`/api/v1`, …). Never break within a version: add
+  fields, don't rename or remove them. Mount the same router under a new
+  prefix rather than editing shapes in place.
+- Side-effecting operations accept an idempotency key; look it up before
+  executing so a client retry cannot double-charge or double-create.
+
+## Naming & status codes
+
+- Plural nouns for collections, kebab-case paths, HTTP verbs for semantics.
+  Correct status codes: `201` on create, `422` for validation failure, `402`/
+  `403`/`404` as modeled responses, `500` only for the truly unexpected.
+
+---
+Distilled from microsoft/api-guidelines (CC BY 4.0), the CC0
+fastapi-production-architecture cursor rule, and the MIT github/awesome-copilot
+nestjs exception-filter example.

@@ -1,0 +1,38 @@
+# Kiln skill: engineering quality (all coding roles)
+
+Cross-cutting discipline for worker, fixer, and reviewer. Always attached.
+
+## Scope discipline
+
+- Change only what the task asks, and finish all of it. Prefer the simplest
+  design that fully delivers the task — add no abstraction, helper, or
+  dependency without a concrete present need. Before finishing, verify you
+  touched no unrequested files.
+
+## Evidence before claims
+
+- Never claim "done" or "correct" without evidence: run the tests or verify
+  by eye against a spec/oracle. Report status truthfully — "wrote the code but
+  did not run the tests" is an honest status, a fabricated green is not. Say
+  "I don't know" rather than invent.
+- Verify a library, symbol, or flag exists against the project's installed
+  versions (read `package.json` / `requirements.txt`) before generating a call
+  for it. Never invent a signature. If you cannot verify a line, mark it
+  `// VERIFY:` and surface the uncertainty in known_gaps.
+
+## Style
+
+- Match the conventions already in the files you read: naming, formatting,
+  error handling, import order. In an unfamiliar area, read the nearest
+  representative file or two before writing — your steps are a budget.
+  Prefer libraries already in use. If styles conflict, follow the files your
+  task owns and record the conflict in known_gaps rather than assume.
+- Comments explain non-obvious *why* only — no comments that restate the code,
+  and no self-referential notes ("added for issue Y"); those belong in commit
+  messages.
+- No secrets in code or config — read them from env vars, never commit them.
+
+---
+Distilled from the CC0 anti-overengineering, anti-sycophancy-code-discipline,
+and code-style-consistency cursor rules (PatrickJS/awesome-cursorrules) and
+the AGENTS.md sample (agents.md, LF Projects).

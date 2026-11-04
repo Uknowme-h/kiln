@@ -53,9 +53,9 @@ _INSTALL_SUBCOMMANDS: dict[str, set[str]] = {
     "pipx": {"install"},
     "uv": {"add", "sync", "pip"},
     "poetry": {"add", "install"},
-    "npm": {"install", "i", "ci", "add", "update"},
-    "yarn": {"add", "install", "upgrade"},
-    "pnpm": {"add", "install", "i", "update"},
+    "npm": {"install", "i", "ci", "add", "update", "create", "init"},
+    "yarn": {"add", "install", "upgrade", "create"},
+    "pnpm": {"add", "install", "i", "update", "create", "dlx"},
     "bun": {"add", "install"},
     "winget": {"install", "upgrade"},
     "choco": {"install", "upgrade"},
@@ -272,6 +272,11 @@ def _classify(text: str, tokens: list[str], head: str) -> tuple[Kind, bool]:
     if subcommands and args and args[0] in subcommands:
         return "install", False
     if head == "npx" and "--no-install" not in args:
+        return "install", False
+    # scaffold CLIs fetch and run a package: create-*, @nestjs/cli, degit-style
+    if head == "npx" and args and (
+        args[0].startswith("create-") or args[0].startswith("@nestjs/cli")
+    ):
         return "install", False
     if head == "dotnet" and args[:2] in (["add", "package"], ["tool", "install"]):
         return "install", False

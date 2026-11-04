@@ -32,8 +32,6 @@ logger = logging.getLogger("kiln")
 
 UI_DIR = Path(__file__).resolve().parents[2] / "ui"
 
-logger = logging.getLogger("kiln")
-
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or load_settings()
@@ -53,6 +51,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.state.demo_task: asyncio.Task | None = None
     app.state.pipeline_task: asyncio.Task | None = None
     app.state.runs = CompanionRegistry()
+    # strong references for fire-and-forget tasks (asyncio keeps only weak ones)
+    app.state.background_tasks: set[asyncio.Task] = set()
 
     @app.get("/health")
     def health() -> dict[str, str]:
@@ -112,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     lines=list(progress.lines or []),
                     note=progress.note or "",
                     allow_run_scope=bool(progress.allow_run_scope),
+                    auto_approved=bool(progress.auto_approved),
                     questions=[
                         {
                             "header": q.header,
@@ -126,7 +127,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         elif progress.state == "approval_resolved":
             await _send_floor(
                 ApprovalResolved(
-                    agent_id=progress.agent or "team", approved=bool(progress.approved)
+                    agent_id=progress.agent or "team",
+                    approved=bool(progress.approved),
+                    auto_approved=bool(progress.auto_approved),
                 )
             )
 
@@ -300,6 +303,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             "workspace": run.workspace,
             "notes": len(run.user_notes),
             "environment": run.environment,
+            "auto_approve": run.auto_approve,
         }
 
     @app.get("/runs/{run_id}/transcript")
@@ -314,7 +318,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if log is None:
             return {"agents": [], "entries": []}
         if agent:
-            entries = log.for_agent(agent, after=after)
+            entries = log.for_agent(agent, after=after, with_children=True)
         else:
             # without an agent filter, only the roster is cheap enough to serve
             entries = []
@@ -417,7 +421,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         approved = bool(body.get("approved", answers is not None))
         scope = body.get("scope", "once")
         feedback = body.get("feedback", "")
-        if scope not in ("once", "run"):
+        if scope not in ("once", "run", "all"):
             scope = "once"
         if not isinstance(feedback, str):
             feedback = ""
@@ -431,7 +435,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             )
         except CompanionUnavailable as exc:
             return {"ok": False, "error": str(exc)}
-        return {"ok": True}
+        return {"ok": True, "auto_approve": run.auto_approve}
+
+    @app.post("/runs/{run_id}/auto-approve")
+    async def set_auto_approve(run_id: str, request: Request) -> dict:
+        """The floor's "allow all commands" switch. Covers command approvals
+        only — the plan beat and ask_user questions still reach the user."""
+        run = app.state.runs.get_run(run_id)
+        if run is None:
+            return {"error": "unknown run"}
+        body = await request.json()
+        enabled = bool(body.get("enabled")) if isinstance(body, dict) else False
+        try:
+            await app.state.runs.set_auto_approve(run_id, enabled)
+        except CompanionUnavailable as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "auto_approve": run.auto_approve}
 
     @app.post("/runs/{run_id}/probe")
     async def probe_run(run_id: str, request: Request) -> dict:
@@ -454,6 +473,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def companion_ws(websocket: WebSocket) -> None:
         await websocket.accept()
         run = None
+        connection = None
         try:
             raw = await asyncio.wait_for(websocket.receive_text(), timeout=30)
             message = decode_companion_message(raw)
@@ -466,7 +486,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 await websocket.close(code=4001, reason=str(exc))
                 return
             connection = app.state.runs.attach(
-                run, websocket, message.workspace, message.environment
+                run, websocket, message.workspace, message.environment, message.auto_approve
             )
             from kiln.companion.protocol import HelloAck
 
@@ -477,6 +497,35 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 run.status,
                 run.workspace or "(pending)",
             )
+            # A reconnect mid-build: replay the active claims so the respawned
+            # companion's LeaseTable matches what the server believes is owned
+            # (run-d918940d died on a LeaseError because this never happened).
+            # The companion also restores from its own .kiln cache on bind;
+            # this replay is the authority for what is still claimed.
+            # It MUST run in the background: each replayed claim_scope is
+            # answered through the receive loop below, so awaiting it here
+            # deadlocked until the 30s call timeout and the replay silently
+            # gave up (caught by the e2e simulator's companion_drop scenario).
+            async def _replay(run_id: str, relock: str) -> None:
+                try:
+                    if relock:
+                        # a respawned `listen` companion has no folder yet, but
+                        # the run already locked one: re-lock it before anything
+                        # else, or every tool fails "workspace not chosen yet"
+                        await app.state.runs.call_tool(
+                            run_id, "set_workspace", {"path": relock}, timeout=30
+                        )
+                        logger.info("re-locked workspace %s on %s", relock, run_id)
+                    replayed = await app.state.runs.replay_claims(run_id)
+                    if replayed:
+                        logger.info("replayed %d active claim(s) to %s", replayed, run_id)
+                except Exception:
+                    logger.exception("claim replay failed for %s", run_id)
+
+            relock = run.workspace if not message.workspace and run.workspace else ""
+            task = asyncio.create_task(_replay(run.id, relock))
+            app.state.background_tasks.add(task)
+            task.add_done_callback(app.state.background_tasks.discard)
             # connect --dir locks the folder in Hello → ready → start now.
             # listen leaves workspace empty (paired); UI POST /workspace starts later.
             if run.status == "ready":
@@ -498,7 +547,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.exception("companion socket failed")
         finally:
             if run is not None:
-                app.state.runs.detach(run.id)
+                # connection-aware: a socket replaced by a reconnect must not
+                # evict the live connection when its handler finally exits
+                app.state.runs.detach(run.id, connection)
                 logger.info("companion detached from %s", run.id)
 
     if UI_DIR.is_dir():

@@ -13,6 +13,10 @@ Rules for this OS:
 - The Python launcher is often `py -3`. Prefer it over `python` when probing.
 - npm may appear as `npm.cmd`. Prefer `npm` and let the shell resolve it.
 - Quote paths that contain spaces with double quotes.
+- Do not pass inline scripts with quotes, braces or regexes on the command
+  line (`node -e "…"`, `python -c "…"`): PowerShell re-parses them and the
+  command breaks before it runs. Check file contents with grep / read_file,
+  and run checks through the project's own scripts or test command.
 - Do not use POSIX-only utilities (`rm -rf`, `cat`, `ls -la`, `chmod`) unless
   you know Git Bash is the active shell. Use PowerShell verbs, or the dedicated
   file tools, instead.

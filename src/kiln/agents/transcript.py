@@ -121,12 +121,22 @@ class TranscriptLog:
                 seen.setdefault(entry.agent_id)
             return list(seen)
 
-    def for_agent(self, agent_id: str, after: int = 0) -> list[TranscriptEntry]:
+    def for_agent(
+        self, agent_id: str, after: int = 0, *, with_children: bool = False
+    ) -> list[TranscriptEntry]:
+        """One agent's entries. ``with_children`` also returns the work it
+        delegated, recorded as ``{agent_id}/...`` (explore sub-agents, context
+        compaction) — what the floor drawer shows for that desk."""
+        prefix = agent_id + "/"
         with self._lock:
             return [
                 entry
                 for entry in self._entries
-                if entry.agent_id == agent_id and entry.seq > after
+                if entry.seq > after
+                and (
+                    entry.agent_id == agent_id
+                    or (with_children and entry.agent_id.startswith(prefix))
+                )
             ]
 
 

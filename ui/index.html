@@ -4,6 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Kiln — the floor</title>
+  <link rel="icon" href="data:," />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Pixelify+Sans:wght@400;600&display=swap" rel="stylesheet" />
@@ -16,13 +17,15 @@
     <span class="spacer"></span>
     <span id="conn" class="chip">connecting</span>
     <span id="approval" class="chip hidden" title="Answer here or in the companion terminal">waiting for approval</span>
+    <button id="auto-btn" class="chip chip-btn hidden" type="button" aria-pressed="false"
+      title="Auto-approve every command the agents run. The plan and questions still ask.">auto-approve: off</button>
     <button id="demo-btn" class="btn" type="button">▶ Run demo</button>
   </header>
 
   <main>
     <section class="panel stage">
       <div class="stage-wrap">
-        <canvas id="floor" width="1000" height="640"></canvas>
+        <canvas id="floor" width="1216" height="736"></canvas>
 
         <!-- The Brief: shown while idle, the client walks in -->
         <div id="brief" class="overlay">
@@ -92,7 +95,10 @@
             <p id="approval-note" class="approval-note"></p>
             <div class="approval-actions">
               <button id="approval-allow" class="btn approval-allow" type="button">Allow once</button>
-              <button id="approval-always" class="btn hidden" type="button">Allow for this run</button>
+              <button id="approval-always" class="btn hidden" type="button"
+                title="Remember this exact command for the rest of the run">Allow for this run</button>
+              <button id="approval-all" class="btn hidden" type="button"
+                title="Auto-approve every command for the rest of the run. The plan and questions still ask.">Allow all</button>
               <button id="approval-deny" class="btn approval-deny" type="button">Deny</button>
             </div>
             <input id="approval-feedback" class="approval-feedback" type="text" autocomplete="off"
@@ -143,17 +149,28 @@
     </aside>
   </main>
 
-  <!-- The agent drawer: click a desk on the floor to read that agent's
-       recorded model and tool I/O. Heavy data, fetched on demand — the
-       SSE floor only ever carries the light ticks. -->
-  <div id="agent-drawer" class="drawer hidden" aria-hidden="true">
+  <!-- The agent drawer: click someone on the floor to see what they are doing
+       (status and activity, from the floor events) and their recorded model
+       and tool I/O (fetched on demand — the SSE floor only carries light ticks). -->
+  <div id="agent-drawer" class="drawer hidden" aria-hidden="true" role="dialog" aria-labelledby="drawer-title">
     <div class="drawer-head">
-      <div>
+      <div class="drawer-who">
         <h2 id="drawer-title">Agent</h2>
         <div id="drawer-sub" class="drawer-sub"></div>
       </div>
-      <button id="drawer-close" class="btn drawer-close" type="button">✕</button>
+      <button id="drawer-close" class="btn drawer-close" type="button" aria-label="Close">✕</button>
     </div>
+    <div class="drawer-now">
+      <label class="drawer-pick-row">
+        <span class="drawer-pick-label">Agent</span>
+        <select id="drawer-pick" class="drawer-pick"></select>
+      </label>
+      <div id="drawer-status" class="drawer-status"></div>
+      <div id="drawer-task" class="drawer-task hidden"></div>
+      <h3 class="drawer-section">Activity</h3>
+      <ol id="drawer-activity" class="drawer-activity"></ol>
+    </div>
+    <h3 class="drawer-section drawer-section-io">Model &amp; tool I/O</h3>
     <div id="drawer-body" class="drawer-body"></div>
   </div>
 

@@ -63,6 +63,33 @@ def test_blame_uses_suite_covers_to_find_the_owning_task():
     assert [t.id for t in owners] == ["accounts"]
 
 
+def test_blame_understands_pytest_dotted_junit_classnames():
+    """pytest's JUnit writes `tests.test_accounts::test_x` (and
+    `tests.test_accounts.TestLogin::test_x` for a class). Only path-style ids
+    used to match, so every pytest failure fell through to the scaffolds and
+    the fixer patched the wrong files (e2e simulator, fix_loop scenario)."""
+    graph = TaskGraph(
+        spec_title="X",
+        tasks=[
+            Task(id="scaffold", title="S", description="s", owned_paths=["app/__init__.py"], kind="scaffold"),
+            Task(id="accounts", title="A", description="a", owned_paths=["app/accounts.py"],
+                 depends_on=["scaffold"], covers=["c1"]),
+            Task(id="accounts_v2", title="A2", description="a2", owned_paths=["app/accounts_v2.py"],
+                 depends_on=["scaffold"], covers=["c2"]),
+        ],
+    )
+    suite = Suite(
+        spec_title="X",
+        files=[
+            SuiteFile(path="tests/test_accounts.py", content="def test_x():\n    pass\n", covers=["c1"]),
+            SuiteFile(path="tests/test_accounts_v2.py", content="def test_y():\n    pass\n", covers=["c2"]),
+        ],
+    )
+    for nodeid in ("tests.test_accounts::test_x", "tests.test_accounts.TestLogin::test_x"):
+        report = Report(cases=[CaseResult(nodeid=nodeid, outcome="failed", message="boom")])
+        assert [t.id for t in blame_tasks(report, graph, suite)] == ["accounts"], nodeid
+
+
 def test_blame_falls_back_to_the_scaffold_not_the_first_task():
     graph = TaskGraph(
         spec_title="X",

@@ -7,6 +7,7 @@ import pytest
 
 from kiln.agents import reviewer
 from kiln.agents.roles import Role
+from kiln.config import Settings
 from kiln.gateway.client import Completion, ModelToolCall
 from kiln.schemas.results import TestCaseResult, TestReport
 from kiln.schemas.review import ReviewVerdict
@@ -169,6 +170,12 @@ class LoopGateway:
     def __init__(self, script):
         self.script = list(script)
         self.seen = []
+        self.settings = Settings(
+            _env_file=None,
+            enable_explore_subagent=False,
+            enable_todo_tool=False,
+            post_edit_diagnostics=False,
+        )
 
     def complete(self, role, messages, **kwargs):
         self.seen.append({"messages": list(messages), **kwargs})

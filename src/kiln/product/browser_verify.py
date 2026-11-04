@@ -8,7 +8,25 @@ from urllib.parse import urljoin
 
 from kiln.product.browser_flows import resolve_flow_plan
 from kiln.product.dev_server import start_dev_server
+from kiln.product.host_env import BLOCKED_HOST_SETUP
 from kiln.schemas.browser_flow import Flow, FlowPlan, FlowStep
+
+# Returned (as a one-item gap list) when the gate cannot run because the host
+# is not provisioned. _product_gates partitions this into the blocked bucket so
+# a UI run cannot go green on an unverified browser — the old code returned []
+# (a silent pass) and run-9f836de2 shipped an unmounted app behind it.
+_BLOCKED_NO_PLAYWRIGHT = (
+    f"browser_verify: {BLOCKED_HOST_SETUP} — Playwright is not installed on this "
+    "host, so the UI was never exercised in a browser"
+)
+_BLOCKED_NO_CHROMIUM = (
+    f"browser_verify: {BLOCKED_HOST_SETUP} — Chromium is not installed "
+    "(run: playwright install chromium), so the UI was never exercised"
+)
+_BLOCKED_NO_START = (
+    f"browser_verify: {BLOCKED_HOST_SETUP} — no start command was found, so the "
+    "app could not be served for browser verification"
+)
 
 
 def _locator(page, step: FlowStep):
@@ -86,17 +104,18 @@ def run_browser_verify(
         try:
             from playwright.sync_api import sync_playwright
         except ImportError:
-            # Host tooling missing — advisory skip (same as no start command).
-            # Do not return a gap: product-gate gaps force the fixer and can
-            # abort an otherwise green run over something code cannot fix.
-            return []
+            # The gate cannot run: surface BLOCKED_HOST_SETUP so a UI run does
+            # not go green on an unverified browser (was a silent pass).
+            return [_BLOCKED_NO_PLAYWRIGHT]
 
         if not url:
             server, start_gap = start_dev_server(root, timeout=timeout)
             if start_gap:
                 return [f"browser_verify: {start_gap}"]
             if server is None:
-                return []  # no start command — advisory skip, same as smoke
+                # No start command at all: the UI cannot be served, so the
+                # browser gate cannot run — blocked, not a pass.
+                return [_BLOCKED_NO_START]
             url = server.base_url
 
         flow_plan = plan or resolve_flow_plan(root, idea=idea, discovery=discovery)
@@ -109,8 +128,8 @@ def run_browser_verify(
                     browser = pw.chromium.launch(headless=True)
                 except Exception as exc:  # noqa: BLE001
                     if _browser_missing(exc):
-                        # Browsers not installed on this host — advisory skip.
-                        return []
+                        # Chromium not installed: blocked, not a silent pass.
+                        return [_BLOCKED_NO_CHROMIUM]
                     return [f"browser_verify: failed to launch chromium: {exc}"]
                 try:
                     context = browser.new_context()
@@ -141,7 +160,7 @@ def run_browser_verify(
                     browser.close()
         except Exception as exc:  # noqa: BLE001
             if _browser_missing(exc):
-                return []
+                return [_BLOCKED_NO_CHROMIUM]
             raise
     finally:
         if server is not None:

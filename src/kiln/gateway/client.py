@@ -3,6 +3,9 @@
 It routes by role, sets max_tokens, retries transient failures, and records tokens.
 """
 
+import asyncio
+import logging
+import threading
 import time
 from dataclasses import dataclass
 
@@ -13,6 +16,54 @@ from kiln.gateway.budget import BudgetGuard
 from kiln.gateway.errors import GatewayError, TransientError
 from kiln.gateway.routing import Route, route_for
 from kiln.gateway.usage import UsageLog
+
+logger = logging.getLogger("kiln.gateway")
+
+
+def _warn_if_on_event_loop(role: Role) -> None:
+    """A model call is a blocking HTTP request that can take a minute.
+
+    On the server's event loop it freezes everything sharing that loop —
+    the companion websocket's keepalive, new handshakes, the floor stream —
+    and the companion drops with 1006. Async callers must use
+    ``await asyncio.to_thread(gateway.complete, ...)``. This makes a
+    regression loud instead of a silent mid-run disconnect.
+    """
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return  # no loop in this thread: a worker thread or a sync caller
+    logger.error(
+        "gateway.complete(%s) called on the event loop thread — this blocks the "
+        "server for the whole model call and drops the companion websocket; "
+        "wrap it in asyncio.to_thread",
+        role.value,
+        stack_info=True,
+    )
+
+
+_PROVIDER_DETAIL_CHARS = 500
+
+
+def _provider_detail(exc: Exception) -> str:
+    """The provider's own error text, clipped — the reason a 400 happened.
+
+    A bare "HTTP 400" left run-9bbe61f0 undiagnosable from its logs. The body
+    is the provider's message about the request, never our credentials.
+    """
+    body = getattr(exc, "body", None)
+    text = ""
+    if isinstance(body, dict):
+        error = body.get("error", body)
+        text = error.get("message", "") if isinstance(error, dict) else str(error)
+    if not text:
+        text = str(getattr(exc, "message", "") or "")
+    text = " ".join(text.split())
+    if not text:
+        return ""
+    if len(text) > _PROVIDER_DETAIL_CHARS:
+        text = text[:_PROVIDER_DETAIL_CHARS] + "…"
+    return f": {text}"
 
 
 @dataclass(frozen=True)
@@ -63,6 +114,28 @@ class ChatTransport:
 
 
 class OpenAITransport(ChatTransport):
+    """One OpenAI client per (base_url, api_key), reused across calls.
+
+    A fresh client per call threw away its connection pool, paying a TLS
+    handshake on every model turn. The client is thread-safe, and calls arrive
+    from worker threads (asyncio.to_thread), so the cache is lock-guarded.
+    """
+
+    def __init__(self) -> None:
+        self._clients: dict[tuple[str, str], object] = {}
+        self._lock = threading.Lock()
+
+    def _client(self, base_url: str, api_key: str):
+        from openai import OpenAI
+
+        key = (base_url, api_key)
+        with self._lock:
+            client = self._clients.get(key)
+            if client is None:
+                client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+                self._clients[key] = client
+            return client
+
     def complete(
         self,
         *,
@@ -79,11 +152,10 @@ class OpenAITransport(ChatTransport):
             APIStatusError,
             APITimeoutError,
             InternalServerError,
-            OpenAI,
             RateLimitError,
         )
 
-        client = OpenAI(api_key=api_key, base_url=base_url, max_retries=0)
+        client = self._client(base_url, api_key)
         try:
             response = client.chat.completions.create(
                 model=model,
@@ -98,7 +170,9 @@ class OpenAITransport(ChatTransport):
         except (APIConnectionError, APITimeoutError, RateLimitError, InternalServerError) as exc:
             raise TransientError(str(exc)) from exc
         except APIStatusError as exc:
-            raise GatewayError(f"Model API returned HTTP {exc.status_code}") from exc
+            raise GatewayError(
+                f"Model API returned HTTP {exc.status_code}{_provider_detail(exc)}"
+            ) from exc
 
         usage = response.usage
         choice = response.choices[0]
@@ -165,6 +239,7 @@ class Gateway:
         route: Route | None = None,
     ) -> Completion:
         self._validate_messages(messages)
+        _warn_if_on_event_loop(role)
         route = route or route_for(role, self.settings)
         if not route.api_key or not route.base_url:
             raise GatewayError(f"{route.provider} is not configured for {role.value}")
@@ -271,6 +346,27 @@ class Gateway:
     def _validate_messages(messages: list[dict]) -> None:
         if not messages:
             raise GatewayError("messages must not be empty")
+        # tool results must answer a tool call of the assistant turn they follow;
+        # an orphan is a history bug, and the API answers it with a bare HTTP 400
+        open_calls: set[str] = set()
+        for index, message in enumerate(messages):
+            role = message.get("role")
+            if role == "assistant":
+                open_calls = {
+                    call.get("id")
+                    for call in message.get("tool_calls") or []
+                    if isinstance(call, dict) and call.get("id")
+                }
+            elif role == "tool":
+                call_id = message.get("tool_call_id")
+                if call_id and call_id not in open_calls:
+                    raise GatewayError(
+                        f"message {index} is a tool result for {call_id!r}, which no "
+                        "preceding assistant turn called (orphaned tool message)"
+                    )
+                open_calls.discard(call_id)
+            else:
+                open_calls = set()
         for message in messages:
             role = message.get("role")
             keys = set(message)

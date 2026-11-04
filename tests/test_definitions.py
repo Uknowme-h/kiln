@@ -1,14 +1,17 @@
 from kiln.agents.definitions import DEFINITIONS, definition_for, may_write, system_prompt_for
 from kiln.agents.roles import Role
 from kiln.agents.skills import (
+    FRAMEWORK_SKILL_ROLES,
     PROD_OPS_ROLES,
     SECURITY_ROLES,
+    SKILL_CATALOG,
     UI_PRODUCT_ROLES,
     handle_skill_tool,
     load_skill,
     needs_prod_ops_skill,
     needs_security_skill,
     needs_ui_product_skill,
+    resolve_skills,
 )
 from kiln.permissions import evaluate
 from kiln.schemas.spec import AcceptanceCriterion, FilePlanEntry, Spec, UserStory
@@ -235,3 +238,45 @@ def test_test_files_belong_to_the_test_author_alone():
 def test_owned_paths_never_widen_a_role_past_a_prefix():
     assert not may_write(Role.WORKER, "secret.txt")
     assert not may_write(Role.WORKER, "appx/main.py", owned_paths=("app/",))
+
+
+# ── framework / quality skill resolution ─────────────────────────────────────
+
+
+def test_all_catalog_skills_load():
+    for name in SKILL_CATALOG:
+        assert load_skill(name).strip(), f"skill {name} has no body"
+
+
+def test_resolve_skills_maps_frameworks_for_build_roles_only():
+    worker = resolve_skills(role="worker", frameworks=("fastapi", "vite_react"))
+    assert "fastapi" in worker and "vite_react" in worker
+    # quality packs ride along by shape
+    assert "eng_quality" in worker and "api_contract" in worker and "frontend_quality" in worker
+    # a non-build role gets no framework or quality packs
+    reporter = resolve_skills(role="reporter", frameworks=("fastapi", "vite_react"))
+    assert reporter == ()
+
+
+def test_resolve_skills_attaches_quality_packs_by_shape():
+    api_only = resolve_skills(role="fixer", frameworks=("express",))
+    assert "api_contract" in api_only and "frontend_quality" not in api_only
+    ui_only = resolve_skills(role="reviewer", frameworks=("nextjs",))
+    assert "frontend_quality" in ui_only and "api_contract" not in ui_only
+    assert "eng_quality" in ui_only  # reviewer is a coding-quality role
+
+
+def test_resolve_skills_merges_required_and_ignores_unknown():
+    skills = resolve_skills(role="worker", frameworks=(), required=("security", "not_a_skill"))
+    assert "security" in skills
+    assert "not_a_skill" not in skills  # pre-validated elsewhere; never crashes the prompt
+
+
+def test_system_prompt_for_appends_framework_packs_only_for_gated_roles():
+    fastapi_body = load_skill("fastapi")
+    worker_prompt = system_prompt_for(Role.WORKER, extra_skills=resolve_skills(role="worker", frameworks=("fastapi",)))
+    assert fastapi_body in worker_prompt
+    assert load_skill("eng_quality") in worker_prompt
+    # reporter is not in FRAMEWORK_SKILL_ROLES, so it never receives the pack
+    reporter_prompt = system_prompt_for(Role.REPORTER, extra_skills=resolve_skills(role="reporter", frameworks=("fastapi",)))
+    assert fastapi_body not in reporter_prompt

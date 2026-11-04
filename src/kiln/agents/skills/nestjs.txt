@@ -1,0 +1,43 @@
+# Kiln skill: NestJS
+
+Apply when the product exposes a NestJS (Node/TypeScript) service.
+
+## Scaffold
+
+- Created by the companion's `scaffold_framework` tool (`@nestjs/cli`,
+  pinned). Follow CLI naming: `*.controller.ts`, `*.service.ts`,
+  `*.module.ts`, `*.dto.ts`, `*.entity.ts`, `*.guard.ts`, `*.filter.ts`.
+
+## Module boundaries
+
+- One module per domain, one controller per route. Business logic lives only
+  in services — controllers stay thin. DTOs validated with class-validator. A
+  `core` module holds global filters/guards/interceptors; a `shared` module
+  holds cross-cutting services.
+
+## The line LLMs always forget
+
+- `main.ts` **must** register the global validation pipe:
+  `app.useGlobalPipes(new ValidationPipe({ whitelist: true,
+  forbidNonWhitelisted: true, transform: true }))`.
+  Omitting it silently accepts and passes through invalid bodies.
+
+## Conventions
+
+- Return values from handlers; avoid Express-style `@Res() res.json()` — it
+  bypasses interceptors, serialization, and exception filters. Use
+  `@Res({ passthrough: true })` only for streams/files.
+- Constructor injection with typed providers; `@Injectable()` on services,
+  never on controllers. No `@Body()` in GET handlers. Import from package
+  roots (e.g. `@nestjs/swagger`, `@nestjs/bullmq` — not deprecated
+  `@nestjs/bull`).
+- No hardcoded config: read ports/URLs/secrets via
+  `ConfigService.getOrThrow()`. TypeORM `synchronize: false`; parameterized
+  queries only.
+- One global exception filter returns a consistent error envelope
+  `{ statusCode, timestamp, path, message }`.
+
+---
+Distilled from the CC0 typescript-nestjs-best-practices and
+nestjs-anti-hallucination cursor rules (PatrickJS/awesome-cursorrules) and the
+MIT github/awesome-copilot `nestjs.instructions.md`.

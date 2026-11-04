@@ -12,6 +12,7 @@ prompt shows exactly what executes. Install commands live here, on the
 companion side, so a server can never smuggle its own command into an install.
 """
 
+import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -19,6 +20,47 @@ from pathlib import Path
 
 RESULTS_FILE = "kiln-results.xml"
 VENV_DIR = ".venv"
+# The node suite's runner, pinned to a major. The companion guarantees it at
+# the suite root: create CLIs (create-next-app, create-vite) do not ship it, and
+# no task owns the manifest just to add a test runner (run-9bbe61f0).
+VITEST_SPEC = "^3.2.0"
+_NPM_PLACEHOLDER_TEST = "no test specified"
+
+
+def plan_node_suite_manifest(root: Path, package_name: str) -> tuple[dict, list[str]]:
+    """The package.json the node suite needs at ``root``, and what changes.
+
+    Returns the (possibly new) manifest and human-readable notes of every
+    change; no notes means the manifest already runs the suite. Existing keys
+    and their order are kept. Raises ValueError for a manifest that is not
+    valid JSON — rewriting it would destroy the user's file.
+    """
+    manifest = root / "package.json"
+    notes: list[str] = []
+    if manifest.is_file():
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"package.json is not valid JSON ({exc}); fix it first") from exc
+        if not isinstance(data, dict):
+            raise ValueError("package.json must be a JSON object")
+    else:
+        data = {"name": package_name, "private": True}
+        notes.append("create package.json")
+    declared = {**(data.get("dependencies") or {}), **(data.get("devDependencies") or {})}
+    if "vitest" not in declared:
+        data.setdefault("devDependencies", {})["vitest"] = VITEST_SPEC
+        notes.append(f"add vitest {VITEST_SPEC} to devDependencies")
+    scripts = data.setdefault("scripts", {})
+    current = str(scripts.get("test") or "")
+    if not current or _NPM_PLACEHOLDER_TEST in current:
+        scripts["test"] = "vitest run"
+        notes.append('set scripts.test to "vitest run"')
+    return data, notes
+
+
+def write_manifest(root: Path, data: dict) -> None:
+    (root / "package.json").write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 _VERSION = re.compile(r"(\d+)\.(\d+)(?:\.(\d+))?")
 
@@ -135,6 +177,32 @@ class StackProfile:
             return [["npm", "install"]] if (workspace / "package.json").is_file() else []
         return []
 
+    def smoke_commands_for_root(
+        self,
+        workspace: Path,
+        root: str,
+        os_name: str,
+        python_argv: list[str] | None = None,
+    ) -> list[list[str]]:
+        """Whole-root compile check for a scaffolded secondary root.
+
+        The primary stack's suite is the real gate; a secondary root (the one
+        stack_id does not cover) gets only a fast syntax/type check this ship,
+        until dual-suite lands. Returns commands to run at that root.
+        """
+        base = workspace if root in ("", ".") else workspace / root
+        if self.id == "python":
+            if not (base / "app").is_dir() and not list(base.glob("*.py")):
+                return []
+            venv_py = venv_python(workspace, os_name)
+            python = [str(venv_py)] if venv_py.exists() else (python_argv or ["python"])
+            return [[*python, "-m", "compileall", "-q", str(base)]]
+        if self.id == "node":
+            if (base / "node_modules").is_dir() and (base / "tsconfig.json").is_file():
+                return [["npx", "--no-install", "tsc", "--noEmit"]]
+            return []
+        return []
+
     def test_command(self, workspace: Path, os_name: str, python_argv: list[str] | None = None) -> list[str]:
         if self.id == "python":
             venv_py = venv_python(workspace, os_name)
@@ -193,8 +261,9 @@ def _python_notes() -> str:
 def _node_notes() -> str:
     return (
         "Stack: Node.js. Dependencies are installed with `npm install` from "
-        "`package.json`. Tests use vitest: put `vitest` in devDependencies and expose "
-        "`npm test` as `vitest run`. Use ES modules or CommonJS consistently. List every "
+        "`package.json`. The suite runs with vitest; the companion installs it at "
+        "the workspace root and sets `npm test` to `vitest run`, so never remove "
+        "either. Use ES modules or CommonJS consistently. List every runtime "
         "dependency in `package.json`."
     )
 

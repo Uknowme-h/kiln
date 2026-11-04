@@ -85,13 +85,26 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         label="Riley Requirements",
         color="#e0a458",
         prompt="requirements",
-        tools=("ask_user", "web_search", "web_fetch", "read_file", "write_file"),
+        # read-only workspace tools so an existing project is understood, not
+        # re-specified from scratch; the only write is docs/discovery.md
+        tools=(
+            "ask_user",
+            "web_search",
+            "web_fetch",
+            "list_dir",
+            "glob",
+            "grep",
+            "read_file",
+            "write_file",
+        ),
         write_prefixes=("docs/",),
         permissions=role_rules(edit=("docs/*",), web=True),
         max_steps=5,
         output_guidance=(
-            "Keep the spec compact: roughly 3-8 user stories and 3-8 acceptance "
-            "criteria, each one line. This is a working spec, not a document."
+            "Write a production-ready working spec: as many stories and "
+            "acceptance criteria as the brief needs (each one line, with a "
+            "named oracle). Prefer a coherent shippable product over a demo; "
+            "capture the full intent of the brief."
         ),
     ),
     Role.PLANNER: RoleDefinition(
@@ -110,14 +123,14 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         permissions=role_rules(edit=("docs/plan.md", "docs/contract.md")),
         max_steps=10,
         output_guidance=(
-            "Size the task graph to the spec: a small idea needs fewer tasks, a "
-            "broad idea may reach the ceiling — the scaffold plus at most five "
-            "features, roughly 3-6 tasks total, each with a one-line description "
-            "and non-overlapping owned paths. Prefer fewer, well-scoped tasks "
-            "that fit inside one worker pass. For UI briefs the scaffold also "
-            "owns docs/design.md following the ui_product skill; for third-party "
-            "UI, plan a mount/bundle owner and depends_on so a shell cannot ship "
-            "a stub host."
+            "Plan the whole spec when it fits one run; defer acceptance "
+            "criteria (the `deferred` list) only when it genuinely cannot, and "
+            "never shrink the build to a demo. Prefer fewer sharp tasks. "
+            "Non-overlapping owned_paths. Each description: 2–4 short lines "
+            "(done-when, files, stubs/ids, must-not). plan.md = seams/schema/"
+            "task table (+ deferred backlog if any), not a route dump. UI: "
+            "scaffold owns docs/design.md + landing/CSS; one mount/bundle "
+            "owner for third-party UI."
         ),
     ),
     Role.TEST_AUTHOR: RoleDefinition(
@@ -147,7 +160,7 @@ DEFINITIONS: dict[Role, RoleDefinition] = {
         max_steps=30,
         output_guidance=(
             "Implement only your task's owned paths — the files the task names and "
-            "nothing more. Keep each file focused and short."
+            "nothing more — and implement them completely. Keep each file focused."
         ),
     ),
     Role.FIXER: RoleDefinition(
@@ -211,6 +224,7 @@ def system_prompt_for(
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
 ) -> str:
     """The role's system prompt with its output guidance appended.
 
@@ -219,6 +233,11 @@ def system_prompt_for(
     the hard ceiling lives in config and only stops a runaway. Skill packs
     append only when the matching flag is true and the role is in that skill's
     role set (callers use ``needs_*_skill`` heuristics).
+
+    ``extra_skills`` carries the declarative set resolved from the Spec's
+    frameworks (framework + quality packs, via ``skills.resolve_skills``). The
+    three booleans stay for the heuristic product skills; the tuple adds the
+    framework/quality packs without changing the boolean call sites.
     """
     definition = definition_for(role)
     base = load_prompt(definition.prompt)
@@ -231,6 +250,11 @@ def system_prompt_for(
         parts.append(load_skill("prod_ops"))
     if security and role.value in SECURITY_ROLES:
         parts.append(load_skill("security"))
+    for name in extra_skills:
+        try:
+            parts.append(load_skill(name))
+        except (FileNotFoundError, ValueError):
+            continue  # unknown/extra names are ignored; required ones are pre-validated
     return "\n\n".join(parts)
 
 

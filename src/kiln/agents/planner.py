@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Awaitable, Callable
 
 from pydantic import ValidationError
 
+from kiln.agents.briefing import existing_workspace_block
 from kiln.agents.definitions import definition_for, system_prompt_for
 from kiln.agents.roles import Role
 from kiln.gateway.client import Gateway
@@ -29,6 +31,8 @@ from kiln.schemas.tasks import Contract, TaskGraph
 from kiln.tools.registry import specs_for
 
 CallTool = Callable[[str, dict], Awaitable[str]]
+
+logger = logging.getLogger("kiln.planner")
 
 # Exploration is a bonus, not the job: a few turns of looking before planning.
 MAX_EXPLORE_ROUNDS = 4
@@ -42,19 +46,28 @@ class PlannerError(RuntimeError):
     """The planner could not produce a valid task graph."""
 
 
-def _base_messages(
-    spec: Spec, user_notes: tuple[str, ...], *, ui_product: bool = False,
-    prod_ops: bool = False,
-    security: bool = False
-) -> list[dict[str, str]]:
+def _spec_block(
+    spec: Spec, user_notes: tuple[str, ...], inventory: list[str] | None = None
+) -> str:
     spec_block = f"<spec>\n{spec.model_dump_json(indent=2)}\n</spec>"
     if user_notes:
         notes = "\n".join(f"- {note}" for note in user_notes)
         spec_block += f"\n\n<user_notes>\n{notes}\n</user_notes>"
+    return spec_block + existing_workspace_block(inventory)
+
+
+def _base_messages(
+    spec: Spec, user_notes: tuple[str, ...], *, ui_product: bool = False,
+    prod_ops: bool = False,
+    security: bool = False,
+    extra_skills: tuple[str, ...] = (),
+    inventory: list[str] | None = None,
+) -> list[dict[str, str]]:
+    spec_block = _spec_block(spec, user_notes, inventory)
     return [
         {
             "role": "system",
-            "content": system_prompt_for(Role.PLANNER, ui_product=ui_product, prod_ops=prod_ops, security=security),
+            "content": system_prompt_for(Role.PLANNER, ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills),
         },
         {"role": "user", "content": spec_block},
     ]
@@ -69,6 +82,8 @@ def _graph_messages(
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
+    inventory: list[str] | None = None,
 ) -> list[dict[str, str]]:
     user = "Plan this spec into a task graph. Answer with the task graph JSON only."
     retry = ""
@@ -77,18 +92,17 @@ def _graph_messages(
             "\n\nYour previous reply failed validation with this error:\n"
             f"<validation_error>\n{error}\n</validation_error>\n"
             "Fix the reply so it validates. Common causes: overlapping owned paths, "
-            "a dependency cycle, or a task with no owned paths. Return corrected JSON only."
+            "a dependency cycle, a task with no owned paths, or an acceptance "
+            "criterion neither covered by a task nor listed in deferred. Return "
+            "corrected JSON only."
         )
     if not messages:
         # one-shot: a single user message carries the ask, the spec, and any retry error
-        spec_block = f"<spec>\n{spec.model_dump_json(indent=2)}\n</spec>"
-        if user_notes:
-            notes = "\n".join(f"- {note}" for note in user_notes)
-            spec_block += f"\n\n<user_notes>\n{notes}\n</user_notes>"
+        spec_block = _spec_block(spec, user_notes, inventory)
         return [
             {
                 "role": "system",
-                "content": system_prompt_for(Role.PLANNER, ui_product=ui_product, prod_ops=prod_ops, security=security),
+                "content": system_prompt_for(Role.PLANNER, ui_product=ui_product, prod_ops=prod_ops, security=security, extra_skills=extra_skills),
             },
             {"role": "user", "content": f"{user}\n\n{spec_block}{retry}"},
         ]
@@ -97,20 +111,48 @@ def _graph_messages(
     return working
 
 
-def _attempt(gateway: Gateway, messages: list[dict[str, str]]) -> TaskGraph:
-    completion = gateway.complete(
-        Role.PLANNER,
-        messages,
-        response_format=response_format("task_graph", TaskGraph),
-        max_tokens=definition_for(Role.PLANNER).max_output_tokens,
-    )
-    if completion.truncated:
-        raise PlannerError(
-            "the planner's output was truncated before the task graph finished. "
-            "Raise max_output_tokens in config (.env) — it is a runaway guard, not "
-            "a length limit (the length guidance lives in the system prompt)."
+class _Attempt:
+    """One graph call. Keeps the raw reply so the final failure can fall back."""
+
+    def __init__(self, spec: Spec):
+        self.criterion_ids = [criterion.id for criterion in spec.acceptance_criteria]
+        self.last_content: str | None = None
+
+    def __call__(self, gateway: Gateway, messages: list[dict[str, str]]) -> TaskGraph:
+        completion = gateway.complete(
+            Role.PLANNER,
+            messages,
+            response_format=response_format("task_graph", TaskGraph),
+            max_tokens=definition_for(Role.PLANNER).max_output_tokens,
         )
-    return TaskGraph.model_validate_json(completion.content)
+        if completion.truncated:
+            raise PlannerError(
+                "the planner's output was truncated before the task graph finished. "
+                "Raise max_output_tokens in config (.env) — it is a runaway guard, not "
+                "a length limit (the length guidance lives in the system prompt)."
+            )
+        self.last_content = completion.content
+        return TaskGraph.model_validate_json(
+            completion.content, context={"criterion_ids": self.criterion_ids}
+        )
+
+    def lenient(self, second: ValidationError) -> TaskGraph:
+        """Accept the last reply without the coverage cross-check, or re-raise.
+
+        Scope coverage is the only spec-dependent check. A graph that is sound
+        on its own (ownership, dependencies, scaffolds) but mis-tracks coverage
+        twice is still buildable — failing the run over it is worse than the
+        pre-coverage behaviour (blame falls back to the scaffold)."""
+        if self.last_content is None:
+            raise PlannerError(f"planner produced an invalid task graph twice: {second}") from second
+        try:
+            graph = TaskGraph.model_validate_json(self.last_content)
+        except ValidationError:
+            raise PlannerError(
+                f"planner produced an invalid task graph twice: {second}"
+            ) from second
+        logger.warning("planner coverage still inconsistent after retry; accepting graph: %s", second)
+        return graph
 
 
 def run(
@@ -121,39 +163,27 @@ def run(
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
+    inventory: list[str] | None = None,
 ) -> TaskGraph:
     """Turn a spec into a validated task graph. One retry with the error shown."""
+    skill = dict(
+        ui_product=ui_product,
+        prod_ops=prod_ops,
+        security=security,
+        extra_skills=extra_skills,
+        inventory=inventory,
+    )
+    attempt = _Attempt(spec)
     try:
-        return _attempt(
-            gateway,
-            _graph_messages(
-                spec,
-                [],
-                user_notes,
-                None,
-                ui_product=ui_product,
-                prod_ops=prod_ops,
-                security=security,
-            ),
-        )
+        return attempt(gateway, _graph_messages(spec, [], user_notes, None, **skill))
     except ValidationError as first:
         try:
-            return _attempt(
-                gateway,
-                _graph_messages(
-                    spec,
-                    [],
-                    user_notes,
-                    str(first),
-                    ui_product=ui_product,
-                    prod_ops=prod_ops,
-                    security=security,
-                ),
+            return attempt(
+                gateway, _graph_messages(spec, [], user_notes, str(first), **skill)
             )
         except ValidationError as second:
-            raise PlannerError(
-                f"planner produced an invalid task graph twice: {second}"
-            ) from second
+            return attempt.lenient(second)
 
 
 async def _explore(
@@ -214,35 +244,48 @@ async def run_agentic(
     ui_product: bool = False,
     prod_ops: bool = False,
     security: bool = False,
+    extra_skills: tuple[str, ...] = (),
+    inventory: list[str] | None = None,
 ) -> TaskGraph:
     """Explore (read-only, one plan note) then emit the validated task graph.
 
     Falls back to the one-shot path when the exploration itself fails, so a
     shaky tool turn never costs the run its plan.
     """
-    skill = dict(ui_product=ui_product, prod_ops=prod_ops, security=security)
+    skill = dict(
+        ui_product=ui_product,
+        prod_ops=prod_ops,
+        security=security,
+        extra_skills=extra_skills,
+        inventory=inventory,
+    )
     messages = _base_messages(spec, user_notes, **skill)
     try:
         messages = await _explore(gateway, messages, call_tool)
     except Exception:
         messages = _base_messages(spec, user_notes, **skill)
+    # The task-graph call is the longest model call of the run (60s+). It must
+    # run off the event loop: a blocking call here froze the server's loop, so
+    # the companion's keepalive went unanswered and the socket dropped with
+    # 1006 (run-a609a72c). tests/test_event_loop_blocking.py guards this.
+    attempt = _Attempt(spec)
     try:
-        return _attempt(
+        return await asyncio.to_thread(
+            attempt,
             gateway,
             _graph_messages(spec, messages, user_notes, None, **skill),
         )
     except ValidationError as first:
         try:
-            return _attempt(
+            return await asyncio.to_thread(
+                attempt,
                 gateway,
                 _graph_messages(
                     spec, messages, user_notes, str(first), **skill
                 ),
             )
         except ValidationError as second:
-            raise PlannerError(
-                f"planner produced an invalid task graph twice: {second}"
-            ) from second
+            return attempt.lenient(second)
 
 
 # ── the durable plan documents ───────────────────────────────────────────────
@@ -284,4 +327,9 @@ def render_plan_markdown(spec: Spec, graph: TaskGraph) -> str:
             f"  owns: {', '.join(task.owned_paths)}"
         )
     lines.append("")
+    if graph.deferred:
+        titles = {c.id: c.then for c in spec.acceptance_criteria}
+        lines.append("## Deferred to a later run")
+        lines += [f"- **{cid}**: {titles.get(cid, '')}".rstrip(": ") for cid in graph.deferred]
+        lines.append("")
     return "\n".join(lines)

@@ -72,7 +72,10 @@ class Glob(BaseModel):
 class Grep(BaseModel):
     pattern: str = Field(min_length=1, description="Regular expression")
     path: str = "."
-    include: str | None = Field(default=None, description="Only files matching this glob")
+    include: str | None = Field(
+        default=None,
+        description="Only files whose path or name matches this glob, e.g. *.tsx or page.tsx",
+    )
 
     @field_validator("path")
     @classmethod

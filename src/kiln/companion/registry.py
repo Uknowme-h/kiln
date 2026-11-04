@@ -36,6 +36,14 @@ class ToolDenied(ToolFailed):
 # Control tools allowed while status is ``paired`` (no workspace yet).
 _PAIRED_TOOLS = frozenset({"browse_host", "set_workspace"})
 
+# Safe to re-run after a disconnect interrupted them mid-flight: reads and
+# scope bookkeeping. Writes, edits and shell are never replayed — a partial
+# write or a half-run command is not idempotent.
+_IDEMPOTENT_TOOLS = frozenset(
+    {"read_file", "list_dir", "glob", "grep", "claim_scope", "release_scope", "list_peers"}
+)
+_DISCONNECT_REASONS = ("companion disconnected", "companion reconnected")
+
 
 @dataclass
 class Run:
@@ -54,6 +62,8 @@ class Run:
     transcript: object = None
     # optional RunDebugLog when Settings.debug is on
     debug_log: object = None
+    # the companion auto-approves command prompts (--auto-approve or the floor)
+    auto_approve: bool = False
 
 
 class CompanionConnection:
@@ -143,6 +153,67 @@ class CompanionRegistry:
         self.runs: dict[str, Run] = {}
         self.connections: dict[str, CompanionConnection] = {}
         self._codes: dict[str, str] = {}  # pair_code -> run_id
+        # Signalled whenever a companion attaches, so an in-flight call that
+        # found no companion can wait out a transient drop instead of failing.
+        self._attach_event = asyncio.Event()
+        # Active claim_scope per run: agent_id -> {owned_paths, label, task}.
+        # The server is the source of truth for who owns what mid-build; on a
+        # companion re-attach these are replayed so the respawned companion's
+        # LeaseTable matches (the run-d918940d LeaseError fix).
+        self._claims: dict[str, dict[str, dict]] = {}
+
+    def _track_claim(self, run_id: str, tool_input: dict, agent: dict | None) -> None:
+        if not agent or not agent.get("id"):
+            return
+        owned = list(tool_input.get("owned_paths") or agent.get("owned_paths") or [])
+        if not owned:
+            return
+        self._claims.setdefault(run_id, {})[agent["id"]] = {
+            "owned_paths": owned,
+            "label": agent.get("label") or agent["id"],
+            "task": str(tool_input.get("task") or ""),
+            "status": str(tool_input.get("status") or "working"),
+        }
+
+    def _track_release(self, run_id: str, agent: dict | None) -> None:
+        if agent and agent.get("id") and run_id in self._claims:
+            self._claims[run_id].pop(agent["id"], None)
+
+    async def replay_claims(self, run_id: str) -> int:
+        """Re-issue active claim_scope calls to a (re)attached companion.
+
+        Called by main after a companion reconnects mid-build. Without this the
+        respawned companion has an empty LeaseTable and refuses every in-scope
+        write (run-d918940d). Returns how many claims were replayed."""
+        claims = list((self._claims.get(run_id) or {}).items())
+        if not claims:
+            return 0
+        from kiln.companion.protocol import AgentScope
+
+        replayed = 0
+        for agent_id, info in claims:
+            scope = AgentScope(
+                id=agent_id,
+                label=info["label"],
+                role="",
+                owned_paths=list(info["owned_paths"]),
+            ).model_dump()
+            try:
+                await self.call_tool(
+                    run_id,
+                    "claim_scope",
+                    {
+                        "owned_paths": list(info["owned_paths"]),
+                        "task": info["task"],
+                        "status": info["status"],
+                    },
+                    timeout=30,
+                    agent=scope,
+                )
+                replayed += 1
+            except CompanionUnavailable:
+                break  # companion dropped again mid-replay; the wait handles it
+        return replayed
 
     def create_run(self, idea: str) -> Run:
         code = "".join(secrets.choice(PAIR_CODE_ALPHABET) for _ in range(6))
@@ -159,29 +230,51 @@ class CompanionRegistry:
         run = self.runs.get(run_id or "")
         if run is None:
             raise PairingError("unknown pair code")
-        # a disconnected companion may reconnect with the same code
-        if run.status not in ("waiting_for_companion", "disconnected"):
-            raise PairingError("pair code already claimed")
-        if time.time() - run.created_at > PAIR_TTL_SECONDS:
-            raise PairingError("pair code expired")
-        return run
+        if run.status == "waiting_for_companion":
+            # the TTL guards the FIRST pairing only; a build that runs past
+            # 15 minutes must still be able to reconnect after a drop
+            if time.time() - run.created_at > PAIR_TTL_SECONDS:
+                raise PairingError("pair code expired")
+            return run
+        if run.status == "disconnected":
+            return run
+        # Reconnect before the server noticed the old socket died: the same
+        # code re-attaching to a run whose folder is already locked replaces
+        # the stale connection (attach + connection-aware detach handle it).
+        if run.workspace and run.status in ("ready", "building", "paired"):
+            return run
+        raise PairingError("pair code already claimed")
 
     def attach(
-        self, run: Run, websocket, workspace: str, environment: dict | None = None
+        self,
+        run: Run,
+        websocket,
+        workspace: str,
+        environment: dict | None = None,
+        auto_approve: bool | None = None,
     ) -> CompanionConnection:
+        stale = self.connections.get(run.id)
+        if stale is not None:
+            # a reconnect replaced a socket the server had not noticed was dead;
+            # its in-flight calls cannot complete on it
+            stale.fail_all("companion reconnected")
         connection = CompanionConnection(websocket)
         self.connections[run.id] = connection
         chosen = (workspace or "").strip()
         if chosen:
             run.workspace = chosen
-            run.status = "ready"
-        elif run.workspace:
-            # reconnect after a drop: keep the folder locked earlier
-            run.status = "ready"
-        else:
+        elif not run.workspace:
             run.workspace = ""
-            run.status = "paired"
+        # A reconnect mid-build resumes as ready; a fresh pair with no folder
+        # yet waits as paired. Never demote a run that is already building.
+        if run.status in ("disconnected", "waiting_for_companion"):
+            run.status = "ready" if run.workspace else "paired"
         run.environment = dict(environment or {})
+        if auto_approve is not None:
+            run.auto_approve = bool(auto_approve)
+        # wake any call_tool waiting out a transient drop for this run
+        self._attach_event.set()
+        self._attach_event = asyncio.Event()
         return connection
 
     def mark_workspace(self, run_id: str, workspace: str) -> Run:
@@ -197,12 +290,24 @@ class CompanionRegistry:
             run.status = "ready"
         return run
 
-    def detach(self, run_id: str) -> None:
-        connection = self.connections.pop(run_id, None)
-        if connection is not None:
+    def detach(self, run_id: str, connection: CompanionConnection | None = None) -> None:
+        current = self.connections.get(run_id)
+        if connection is not None and current is not connection:
+            # an old socket's handler finishing after a reconnect took over:
+            # fail only its own calls, never evict the live connection
             connection.fail_all("companion disconnected")
+            return
+        self.connections.pop(run_id, None)
+        if current is not None:
+            current.fail_all("companion disconnected")
         run = self.runs.get(run_id)
-        if run is not None and run.status in ("paired", "ready"):
+        # Any drop lets the companion re-claim with the same code — including a
+        # drop mid-'building' (the run's model state lives server-side, so the
+        # pipeline can resume once the workspace is reachable again). Before
+        # this, only paired/ready flipped to disconnected, so a companion that
+        # died during a build could never reconnect ("pair code already
+        # claimed") and the run failed with CompanionUnavailable.
+        if run is not None and run.status in ("paired", "ready", "building"):
             run.status = "disconnected"
 
     async def call_tool(
@@ -213,15 +318,48 @@ class CompanionRegistry:
         timeout: float = CALL_TIMEOUT_SECONDS,
         agent: dict | None = None,
     ) -> str:
-        connection = self.connections.get(run_id)
-        if connection is None:
-            raise CompanionUnavailable("no companion attached to this run")
         run = self.runs.get(run_id)
         if run is not None and run.status == "paired" and tool not in _PAIRED_TOOLS:
             raise CompanionUnavailable(
                 "workspace not chosen yet — only browse_host and set_workspace are allowed"
             )
-        return await connection.call(tool, tool_input, timeout, agent)
+        # A call that finds no companion waits out a transient drop rather than
+        # failing the run on the spot. (An in-flight call lost to a disconnect
+        # is *not* blindly retried — re-running a partial write/shell is not
+        # idempotent. The orchestrator's fixer/plan loop re-drives it cleanly.)
+        connection = self.connections.get(run_id)
+        if connection is None:
+            connection = await self._await_attach(run_id, timeout)
+        try:
+            output = await connection.call(tool, tool_input, timeout, agent)
+        except CompanionUnavailable as exc:
+            # ToolFailed/ToolDenied are real answers, never retried
+            interrupted = type(exc) is CompanionUnavailable and str(exc) in _DISCONNECT_REASONS
+            if not (interrupted and tool in _IDEMPOTENT_TOOLS):
+                raise
+            connection = await self._await_attach(run_id, timeout)
+            output = await connection.call(tool, tool_input, timeout, agent)
+        # Track lease state as the source of truth for the re-attach replay.
+        # Only on success — a failed claim/release changes nothing.
+        if tool == "claim_scope":
+            self._track_claim(run_id, tool_input, agent)
+        elif tool == "release_scope":
+            self._track_release(run_id, agent)
+        return output
+
+    async def _await_attach(self, run_id: str, timeout: float) -> CompanionConnection:
+        """Wait for a companion to (re)attach within `timeout`, else CompanionUnavailable."""
+        deadline = time.monotonic() + min(timeout, 90)
+        while time.monotonic() < deadline:
+            connection = self.connections.get(run_id)
+            if connection is not None:
+                return connection
+            event = self._attach_event
+            try:
+                await asyncio.wait_for(event.wait(), timeout=5)
+            except TimeoutError:
+                pass
+        raise CompanionUnavailable("no companion attached to this run")
 
     async def answer_approval(
         self,
@@ -242,6 +380,18 @@ class CompanionRegistry:
             approved=approved, scope=scope, feedback=feedback, answers=answers
         )
         await connection.websocket.send_text(answer.model_dump_json())
+        if scope == "all" and approved and answers is None:
+            self.runs[run_id].auto_approve = True
+
+    async def set_auto_approve(self, run_id: str, enabled: bool) -> None:
+        """Flip the companion's auto-approve for command prompts from the floor."""
+        from kiln.companion.protocol import AutoApprove
+
+        connection = self.connections.get(run_id)
+        if connection is None:
+            raise CompanionUnavailable("no companion attached to this run")
+        await connection.websocket.send_text(AutoApprove(enabled=enabled).model_dump_json())
+        self.runs[run_id].auto_approve = bool(enabled)
 
     def add_note(self, run_id: str, text: str) -> int:
         run = self.runs[run_id]

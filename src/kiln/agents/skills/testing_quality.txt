@@ -1,0 +1,38 @@
+# Kiln skill: testing quality
+
+Apply to whoever writes or runs tests — and to workers/fixers, who must never
+game them.
+
+## Structure
+
+- Arrange / Act / Assert. Test names state the expected behavior. Group
+  related cases in `describe`. Cover valid inputs, invalid inputs, and edge
+  cases (undefined, empty, type mismatches).
+- Mock dependencies **before** importing the unit under test (`vi.mock()`);
+  reset mocks in `beforeEach`. Keep 3–5 focused tests per file; prioritize
+  business logic over trivial getters.
+
+## No flakiness
+
+- **No hard waits.** Rely on the runner's auto-waiting (Playwright); never
+  `waitForTimeout`-style sleeps. Selectors are `data-testid` or semantic
+  (role/label), never brittle CSS/XPath.
+- Make E2E deterministic: intercept the network (`page.route`) so tests are
+  hermetic, and cover success **and** error paths.
+
+## Oracles are concrete
+
+- Assert exact expected values and files (`toEqual({...})`,
+  `toHaveText(/Welcome, validUser/)`), never "does not throw". An oracle names
+  a real file/route/value a generic template would fail.
+
+## Integrity
+
+- Workers and fixers **never edit `tests/`** to force green. If a test looks
+  wrong for the spec, fix the code or flag the test as characterizing existing
+  behavior — do not weaken the assertion. Run the suite until green before
+  claiming done; add or update tests for the code you change even if unasked.
+
+---
+Distilled from the CC0 vitest-unit-testing and playwright-e2e-testing cursor
+rules (PatrickJS/awesome-cursorrules) and the AGENTS.md sample (agents.md).

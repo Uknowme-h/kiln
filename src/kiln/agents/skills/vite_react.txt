@@ -1,0 +1,43 @@
+# Kiln skill: Vite + React (SPA)
+
+Apply when the product is a React single-page app built with Vite.
+
+## Scaffold
+
+- The skeleton is created by the companion's `scaffold_framework` tool, which
+  runs the pinned official command (`npm create vite`, template `react-ts`).
+  Never scaffold by hand and **never use create-react-app** — CRA was
+  deprecated by the React team in Feb 2025 and prints a deprecation warning.
+- Layout the recipe leaves: `index.html` at the project root (this *is* the
+  entry point, not `public/`), `src/main.tsx` mounts the app, `vite.config.ts`
+  at the root. Keep the default scripts: `dev` = vite, `build` = vite build,
+  `preview` = vite preview. Requires Node 20.19+.
+- **The recipe is TypeScript.** Edit `src/App.tsx` in place and write new
+  components as `.tsx`. Never add a parallel `App.jsx`/`Landing.jsx`:
+  `main.tsx` imports `./App.tsx`, so a `.jsx` twin is never mounted and the
+  served page stays the stock Vite demo.
+
+## Conventions
+
+- Routing: use a data router (`createBrowserRouter` + `<RouterProvider>`).
+  Never roll route state with `useState` — it produces no shareable URLs.
+- Folder ownership: components under `src/components`, pages/routes under
+  `src/pages` or `src/routes`, shared hooks under `src/hooks`. Co-locate
+  `*.test.tsx` next to the source it tests (Vitest).
+- Dev proxy / CORS: proxy `/api` to the backend via `server.proxy` in
+  `vite.config.ts` with `changeOrigin` and a path `rewrite`. **Never set
+  `server.cors: true`** — Vite warns it exposes source via DNS rebinding; the
+  default allows localhost origins only.
+- Env/secrets: `.env` files are blocked from serving by default
+  (`server.fs.deny`). `VITE_*` vars are inlined into the build — never put a
+  server secret in one.
+
+## Done-definition
+
+- Done means the dev server builds clean (`vite build`) and the page mounts
+  the real component tree — not a stub host div with "mounts here".
+
+---
+Structure distilled from the Vite guide (vite.dev, MIT), react.dev "Sunsetting
+Create React App" (Feb 2025), Vite server-options docs, and the CC0
+typescript-nodejs-react-vite cursor rule (PatrickJS/awesome-cursorrules).
