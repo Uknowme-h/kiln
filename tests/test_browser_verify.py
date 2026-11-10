@@ -83,7 +83,11 @@ def test_resolve_prefers_workspace_file(tmp_path: Path):
 
 
 def _skip_if_no_browser(gaps: list[str]) -> None:
-    if gaps and any("playwright browsers missing" in g for g in gaps):
+    if gaps and any(
+        ("playwright browsers missing" in g)
+        or ("blocked_host_setup" in g and "chromium is not installed" in g.lower())
+        for g in gaps
+    ):
         pytest.skip("playwright chromium not installed (run: playwright install chromium)")
 
 

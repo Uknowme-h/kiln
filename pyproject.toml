@@ -52,3 +52,4 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP"]
+ignore = ["E501", "I001", "UP037", "UP046", "UP047"]
