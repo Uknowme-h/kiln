@@ -4,7 +4,9 @@ Kiln turns one typed product idea into a tested web app. A requirements agent ga
 
 The team builds on the **user's own machine**, not the server: `POST /runs` returns a pair code, and a small local companion (`kiln-companion connect CODE --dir .`) claims it over one outbound WebSocket. File tools, shell commands, installs, and tests run locally. Every command that needs consent is approved in the companion terminal. See `docs/local-companion.md` and `docs/dev-environment.md`.
 
-https://github.com/user-attachments/assets/b8a48f78-ac72-41db-90e6-fcbd476b1877
+
+https://github.com/user-attachments/assets/0d582662-6bfa-4346-9919-4219a99455cb
+
 
 ## Stack
 
